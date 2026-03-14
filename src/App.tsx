@@ -164,10 +164,9 @@ const Sidebar = ({
                 setView('dashboard');
                 onClose();
               }}
-              className="text-left group"
+              className="font-headline font-bold text-on-surface hover:text-primary transition-colors"
             >
-              <h2 className="font-headline text-2xl font-bold text-on-surface leading-tight group-hover:text-primary transition-colors">StudySmart</h2>
-              <p className="font-label text-xs text-on-surface-variant mt-1 uppercase tracking-widest">Academic Focus</p>
+              Dashboard
             </button>
             <button onClick={onClose} className="lg:hidden p-2 text-on-surface-variant hover:text-primary">
               <X size={20} />
@@ -381,9 +380,6 @@ const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
         <h1 className="font-headline text-5xl lg:text-7xl font-extrabold text-on-surface leading-tight mb-6">
           Master the <span className="italic font-body font-light text-primary">Art</span> of Learning.
         </h1>
-        <p className="text-xl text-on-surface-variant max-w-xl leading-relaxed">
-          You've completed <span className="text-on-surface font-semibold">12 of 28 modules</span> this week. Pick up where you left off in Biology 101.
-        </p>
       </div>
       <div className="lg:col-span-5 flex justify-end">
         <button 
@@ -1382,7 +1378,6 @@ const NightlyReviewView = () => (
 export default function App() {
   const [view, setView] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [isNightlyFABVisible, setIsNightlyFABVisible] = useState(true);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
@@ -1440,33 +1435,6 @@ export default function App() {
           </AnimatePresence>
         </main>
       </div>
-
-      {/* Floating Action Button */}
-      <AnimatePresence>
-        {isNightlyFABVisible && (
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.8, y: 20 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.8, y: 20 }}
-            className="fixed bottom-8 right-8 z-50 flex items-center"
-          >
-            <button 
-              onClick={() => setView('timeline')}
-              className="flex items-center gap-3 h-14 px-6 rounded-l-full bg-primary text-on-primary editorial-shadow hover:bg-primary-dim transition-all group"
-            >
-              <Moon size={20} className="group-hover:rotate-12 transition-transform fill-on-primary" />
-              <span className="font-headline font-bold text-sm tracking-wide">Nightly Review</span>
-            </button>
-            <button 
-              onClick={() => setIsNightlyFABVisible(false)}
-              className="h-14 w-12 flex items-center justify-center bg-primary-dim text-on-primary rounded-r-full border-l border-on-primary/10 hover:bg-primary transition-all"
-              title="Hide Nightly Review"
-            >
-              <X size={18} />
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }
