@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, 
   BookOpen, 
@@ -498,6 +498,165 @@ const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
   </div>
 );
 
+const FileUploader = () => {
+  const [file, setFile] = useState<File | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const MAX_SIZE = 200 * 1024 * 1024; // 200MB
+
+  const handleFile = (selectedFile: File) => {
+    setError(null);
+    if (selectedFile.size > MAX_SIZE) {
+      setError("File size exceeds 200MB limit.");
+      return;
+    }
+    setFile(selectedFile);
+    simulateUpload();
+  };
+
+  const simulateUpload = () => {
+    setProgress(0);
+    const interval = setInterval(() => {
+      setProgress((prev) => {
+        if (prev >= 100) {
+          clearInterval(interval);
+          return 100;
+        }
+        return prev + 5;
+      });
+    }, 100);
+  };
+
+  const onDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const onDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const droppedFile = e.dataTransfer.files[0];
+    if (droppedFile) handleFile(droppedFile);
+  };
+
+  const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = e.target.files?.[0];
+    if (selectedFile) handleFile(selectedFile);
+  };
+
+  return (
+    <div 
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+      className={cn(
+        "bg-surface-container-low rounded-xl p-1 border-2 border-dashed transition-all",
+        isDragging ? "border-primary bg-primary/5" : "border-outline-variant/30 group-hover:border-primary/40"
+      )}
+    >
+      <div className="bg-surface-container-lowest rounded-lg p-12 flex flex-col items-center text-center editorial-shadow">
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          onChange={onFileSelect} 
+          className="hidden" 
+          accept=".pdf,.epub,.docx"
+        />
+        
+        <div className="relative mb-8 w-64 h-48 flex items-center justify-center">
+          <div className="absolute inset-0 bg-primary-container/20 rounded-xl rotate-3 scale-95 transition-transform group-hover:rotate-6"></div>
+          <div className="absolute inset-0 bg-secondary-container/20 rounded-xl -rotate-2 scale-95 transition-transform group-hover:-rotate-4"></div>
+          <div className="relative bg-white p-6 rounded-lg editorial-shadow border border-outline-variant/10 w-32 h-44 z-10 flex flex-col justify-between">
+            <div className="space-y-2">
+              <div className="h-2 w-full bg-surface-container-highest rounded-full"></div>
+              <div className="h-2 w-3/4 bg-surface-container-highest rounded-full"></div>
+              <div className="h-2 w-5/6 bg-surface-container-highest rounded-full"></div>
+            </div>
+            <div className="flex justify-center">
+              <Sparkles className="text-primary" size={32} />
+            </div>
+          </div>
+          <div className="absolute top-0 right-0 transform translate-x-4 -translate-y-4 bg-primary-container p-3 rounded-full editorial-shadow">
+            <FileText className="text-on-primary-container" size={16} />
+          </div>
+          <div className="absolute bottom-4 left-0 transform -translate-x-6 bg-tertiary-container p-3 rounded-full editorial-shadow">
+            <HelpCircle className="text-on-tertiary-container" size={16} />
+          </div>
+        </div>
+
+        <div className="space-y-4 w-full">
+          {file ? (
+            <div className="space-y-4 w-full max-w-xs mx-auto">
+              <div className="flex items-center gap-3 p-3 bg-surface-container-low rounded-lg border border-outline-variant/10">
+                <div className="w-10 h-10 rounded bg-primary/10 flex items-center justify-center text-primary shrink-0">
+                  <FileText size={20} />
+                </div>
+                <div className="text-left overflow-hidden">
+                  <p className="text-sm font-bold text-on-surface truncate">{file.name}</p>
+                  <p className="text-[10px] text-on-surface-variant uppercase font-label">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <ProgressBar progress={progress} className="h-2" />
+                <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
+                  <span>{progress === 100 ? "Analysis Complete" : "Deconstructing..."}</span>
+                  <span>{progress}%</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <>
+              <h3 className="font-headline text-2xl font-bold text-on-surface">Ready for Deconstruction</h3>
+              <p className="text-on-surface-variant text-sm max-w-xs mx-auto leading-relaxed">
+                Drag and drop your textbook here or click to browse your computer.
+              </p>
+            </>
+          )}
+          
+          {error && (
+            <motion.p 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-error text-xs font-bold uppercase tracking-widest"
+            >
+              {error}
+            </motion.p>
+          )}
+        </div>
+
+        {!file && (
+          <div className="mt-12 flex flex-col items-center gap-4">
+            <button 
+              onClick={() => fileInputRef.current?.click()}
+              className="bg-primary text-on-primary px-8 py-4 rounded-xl font-headline font-bold text-lg hover:bg-primary-dim transition-all editorial-shadow flex items-center gap-3"
+            >
+              <Upload size={24} />
+              Upload New Textbook
+            </button>
+            <p className="font-label text-sm text-on-surface-variant">PDF, EPUB, or DOCX up to 200MB</p>
+          </div>
+        )}
+        
+        {file && progress === 100 && (
+          <button 
+            onClick={() => setFile(null)}
+            className="mt-8 text-primary font-label text-sm font-bold hover:underline"
+          >
+            Upload another file
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const CurateView = () => (
   <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
     <div className="lg:col-span-8 space-y-10">
@@ -508,48 +667,7 @@ const CurateView = () => (
         </p>
       </header>
       <section className="relative group">
-        <div className="bg-surface-container-low rounded-xl p-1 border-2 border-dashed border-outline-variant/30 group-hover:border-primary/40 transition-all">
-          <div className="bg-surface-container-lowest rounded-lg p-12 flex flex-col items-center text-center editorial-shadow">
-            <div className="relative mb-8 w-64 h-48 flex items-center justify-center">
-              <div className="absolute inset-0 bg-primary-container/20 rounded-xl rotate-3 scale-95 transition-transform group-hover:rotate-6"></div>
-              <div className="absolute inset-0 bg-secondary-container/20 rounded-xl -rotate-2 scale-95 transition-transform group-hover:-rotate-4"></div>
-              <div className="relative bg-white p-6 rounded-lg editorial-shadow border border-outline-variant/10 w-32 h-44 z-10 flex flex-col justify-between">
-                <div className="space-y-2">
-                  <div className="h-2 w-full bg-surface-container-highest rounded-full"></div>
-                  <div className="h-2 w-3/4 bg-surface-container-highest rounded-full"></div>
-                  <div className="h-2 w-5/6 bg-surface-container-highest rounded-full"></div>
-                </div>
-                <div className="flex justify-center">
-                  <Sparkles className="text-primary" size={32} />
-                </div>
-              </div>
-              <div className="absolute top-0 right-0 transform translate-x-4 -translate-y-4 bg-primary-container p-3 rounded-full editorial-shadow">
-                <FileText className="text-on-primary-container" size={16} />
-              </div>
-              <div className="absolute bottom-4 left-0 transform -translate-x-6 bg-tertiary-container p-3 rounded-full editorial-shadow">
-                <HelpCircle className="text-on-tertiary-container" size={16} />
-              </div>
-            </div>
-            <div className="space-y-4">
-              <h3 className="font-headline text-2xl font-bold text-on-surface">Processing...</h3>
-              <div className="max-w-xs mx-auto space-y-2">
-                <ProgressBar progress={45} className="h-2" />
-                <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
-                  <span>Course Completion</span>
-                  <span>45%</span>
-                </div>
-                <p className="text-sm font-label text-on-surface-variant/80 italic mt-2">12 of 28 modules finished</p>
-              </div>
-            </div>
-            <div className="mt-12 flex flex-col items-center gap-4">
-              <button className="bg-primary text-on-primary px-8 py-4 rounded-xl font-headline font-bold text-lg hover:bg-primary-dim transition-all editorial-shadow flex items-center gap-3">
-                <Upload size={24} />
-                Upload New Textbook
-              </button>
-              <p className="font-label text-sm text-on-surface-variant">PDF, EPUB, or DOCX up to 50MB</p>
-            </div>
-          </div>
-        </div>
+        <FileUploader />
       </section>
       <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
