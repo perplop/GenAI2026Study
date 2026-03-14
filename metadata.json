@@ -1,0 +1,5 @@
+{
+  "name": "StudySmart",
+  "description": "An AI-powered study companion that deconstructs textbooks into digestible nodes of knowledge, generating personalized study paths, quizzes, and nightly reviews.",
+  "requestFramePermissions": []
+}

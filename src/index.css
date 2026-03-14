@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Newsreader:ital,opsz,wght@0,6..72,200..800;1,6..72,200..800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-headline: "Manrope", sans-serif;
+  --font-body: "Newsreader", serif;
+  --font-label: "Manrope", sans-serif;
+
+  --color-primary: #0b6975;
+  --color-primary-dim: #005c68;
+  --color-primary-container: #a3eefd;
+  --color-on-primary: #ecfcff;
+  --color-on-primary-container: #005a66;
+
+  --color-secondary: #466370;
+  --color-secondary-container: #c9e7f7;
+  --color-on-secondary-container: #395663;
+
+  --color-tertiary: #436181;
+  --color-tertiary-container: #b5d4fa;
+  --color-on-tertiary-container: #2a4a68;
+
+  --color-surface: #f6fafb;
+  --color-surface-container-low: #eff5f6;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-high: #e1eaec;
+  --color-surface-container-highest: #dae4e7;
+  --color-on-surface: #2a3436;
+  --color-on-surface-variant: #576163;
+
+  --color-outline-variant: #a9b4b6;
+  --color-error: #a83836;
+  --color-error-container: #fa746f;
+}
+
+@layer base {
+  body {
+    @apply bg-surface text-on-surface font-body;
+  }
+}
+
+.editorial-shadow {
+  box-shadow: 0 10px 32px 0 rgba(42, 52, 54, 0.06);
+}
+
+.glass-panel {
+  background: rgba(246, 250, 251, 0.8);
+  backdrop-filter: blur(20px);
+}
