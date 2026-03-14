@@ -504,6 +504,7 @@ const FileUploader = ({ onUploadSuccess }: { onUploadSuccess: () => void }) => {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const MAX_SIZE = 200 * 1024 * 1024; // 200MB
 
@@ -533,21 +534,29 @@ const FileUploader = ({ onUploadSuccess }: { onUploadSuccess: () => void }) => {
     } catch (err) {
       setError("Failed to upload file to server.");
       setFile(null);
+      if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
     }
   };
 
   const simulateUpload = () => {
+    if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
     setProgress(0);
-    const interval = setInterval(() => {
+    uploadIntervalRef.current = setInterval(() => {
       setProgress((prev) => {
         if (prev >= 100) {
-          clearInterval(interval);
+          if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
           return 100;
         }
         return prev + 5;
       });
     }, 150);
   };
+
+  useEffect(() => {
+    return () => {
+      if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
+    };
+  }, []);
 
   const onDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -613,21 +622,49 @@ const FileUploader = ({ onUploadSuccess }: { onUploadSuccess: () => void }) => {
         <div className="space-y-4 w-full">
           {file ? (
             <div className="space-y-4 w-full max-w-xs mx-auto">
-              <div className="flex items-center gap-3 p-3 bg-surface-container-low rounded-lg border border-outline-variant/10">
+              <div className="flex items-center gap-3 p-3 bg-surface-container-low rounded-lg border border-outline-variant/10 relative group/file">
                 <div className="w-10 h-10 rounded bg-primary/10 flex items-center justify-center text-primary shrink-0">
                   <FileText size={20} />
                 </div>
-                <div className="text-left overflow-hidden">
+                <div className="text-left overflow-hidden pr-8">
                   <p className="text-sm font-bold text-on-surface truncate">{file.name}</p>
                   <p className="text-[10px] text-on-surface-variant uppercase font-label">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
                 </div>
+                <button 
+                  onClick={() => {
+                    setFile(null);
+                    setProgress(0);
+                    if (uploadIntervalRef.current) clearInterval(uploadIntervalRef.current);
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-full hover:bg-error/10 text-on-surface-variant hover:text-error transition-colors"
+                  title="Cancel Upload"
+                >
+                  <X size={16} />
+                </button>
               </div>
+              
               <div className="space-y-2">
-                <ProgressBar progress={progress} className="h-2" />
-                <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
-                  <span>{progress === 100 ? "Analysis Complete" : "Deconstructing..."}</span>
-                  <span>{progress}%</span>
-                </div>
+                {progress < 100 ? (
+                  <>
+                    <ProgressBar progress={progress} className="h-2" />
+                    <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
+                      <span>Deconstructing...</span>
+                      <span>{progress}%</span>
+                    </div>
+                  </>
+                ) : (
+                  <motion.div 
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="flex flex-col items-center gap-2 py-2"
+                  >
+                    <div className="flex items-center gap-2 text-primary">
+                      <CheckCircle2 size={20} />
+                      <span className="font-headline font-bold uppercase tracking-widest text-sm">Upload Complete</span>
+                    </div>
+                    <p className="text-[10px] text-on-surface-variant font-label uppercase tracking-widest italic">Ready for analysis in your library</p>
+                  </motion.div>
+                )}
               </div>
             </div>
           ) : (
