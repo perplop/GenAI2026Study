@@ -54,4 +54,10 @@ export interface GeminiChunkResult {
 export interface TextbookAnalysis {
   bookTitle: string;
   chunkResults: GeminiChunkResult[];
+export interface LibraryItem {
+  id: string;
+  name: string;
+  size: number;
+  path: string;
+  uploadedAt: string;
 }
