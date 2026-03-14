@@ -14,8 +14,16 @@ export interface TextbookChunk {
   imageDataUrls: string[];
 }
 
+/** Individual page with 1-based page number and extracted text. */
+export interface ParsedPage {
+  pageNum: number; // 1-based
+  text: string;
+}
+
 export interface ParsedTextbook {
   chunks: TextbookChunk[];
+  pages: ParsedPage[];
+  totalPages: number;
   fileName: string;
 }
 
@@ -63,6 +71,9 @@ export async function parseTextbook(
     onProgress?.(n, numPages);
   }
 
+  // Build ParsedPage array (1-based page numbers)
+  const pages: ParsedPage[] = pageTexts.map((text, i) => ({ pageNum: i + 1, text }));
+
   const chunks: TextbookChunk[] = [];
   for (let start = 1; start <= numPages; start += CHUNK_PAGES) {
     const end = Math.min(start + CHUNK_PAGES - 1, numPages);
@@ -79,6 +90,8 @@ export async function parseTextbook(
 
   return {
     chunks,
+    pages,
+    totalPages: numPages,
     fileName: file.name,
   };
 }
