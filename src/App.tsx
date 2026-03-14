@@ -31,14 +31,12 @@ import {
   Moon,
   Sparkles,
   Menu,
-  X,
-  Loader2,
-  AlertCircle
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 import { cn } from './lib/utils';
-import { Course, Activity, Module, QuizQuestion, LibraryItem, TextbookStructure } from './types';
+import { Course, Activity, Module, QuizQuestion, LibraryItem } from './types';
 
 // --- Mock Data ---
 
@@ -788,121 +786,7 @@ const CurateView = ({ onUploadSuccess }: { onUploadSuccess: () => void }) => (
   </div>
 );
 
-const DeconstructedView = ({ id, onBack }: { id: string, onBack: () => void }) => {
-  const [data, setData] = useState<TextbookStructure | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const response = await fetch(`/api/parsed/${id}`);
-        if (!response.ok) throw new Error('Failed to fetch parsed data');
-        const json = await response.json();
-        setData(json);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchData();
-  }, [id]);
-
-  if (loading) return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-4">
-      <Loader2 className="animate-spin text-primary" size={48} />
-      <p className="font-headline text-xl font-bold text-on-surface">Deconstructing Knowledge...</p>
-    </div>
-  );
-
-  if (error || !data) return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-6">
-      <AlertCircle className="text-error" size={48} />
-      <div className="text-center">
-        <h3 className="font-headline text-2xl font-bold text-on-surface">Failed to load deconstructed view</h3>
-        <p className="text-on-surface-variant mt-2">{error || 'Data not available'}</p>
-      </div>
-      <button onClick={onBack} className="bg-primary text-on-primary px-8 py-3 rounded-xl font-bold">Go Back</button>
-    </div>
-  );
-
-  return (
-    <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10">
-      <button 
-        onClick={onBack}
-        className="flex items-center gap-2 text-on-surface-variant hover:text-primary transition-colors mb-8 font-label text-sm font-bold"
-      >
-        <ArrowLeft size={16} />
-        Back to Library
-      </button>
-
-      <header className="mb-12">
-        <h1 className="font-headline text-5xl font-extrabold tracking-tight text-on-surface">StudySmart Deconstruction</h1>
-        <p className="text-xl text-on-surface-variant mt-2 italic font-body">Hierarchical knowledge map extracted by AI.</p>
-      </header>
-
-      <div className="space-y-12">
-        {data.chapters.map((chapter) => (
-          <section key={chapter.id} className="space-y-8">
-            <div className="flex items-center gap-4">
-              <div className="bg-primary text-on-primary w-12 h-12 rounded-xl flex items-center justify-center font-headline text-xl font-bold">
-                {chapter.id.replace('ch', '')}
-              </div>
-              <h2 className="font-headline text-3xl font-extrabold text-on-surface">{chapter.title}</h2>
-            </div>
-
-            <div className="grid grid-cols-1 gap-8">
-              {chapter.sections.map((section) => (
-                <div key={section.id} className="bg-surface-container-low rounded-2xl p-8 editorial-shadow border border-outline-variant/10">
-                  <h3 className="font-headline text-2xl font-bold text-on-surface mb-6 flex items-center gap-3">
-                    <span className="text-primary/40">#</span> {section.title}
-                  </h3>
-
-                  <div className="space-y-8">
-                    {section.subsections.map((subsection) => (
-                      <div key={subsection.id} className="space-y-6">
-                        <h4 className="font-headline text-xl font-bold text-on-surface flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full bg-secondary" />
-                          {subsection.title}
-                        </h4>
-
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                          {subsection.topics.map((topic) => (
-                            <div key={topic.id} className="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/5 space-y-4">
-                              <h5 className="font-headline text-lg font-bold text-primary">{topic.title}</h5>
-                              <p className="text-on-surface-variant leading-relaxed text-sm">{topic.content}</p>
-                              
-                              {topic.educationalComponents && topic.educationalComponents.length > 0 && (
-                                <div className="pt-4 flex flex-wrap gap-2">
-                                  {topic.educationalComponents.map((comp, idx) => (
-                                    <div 
-                                      key={idx}
-                                      className="bg-secondary/10 text-secondary px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-widest border border-secondary/20"
-                                      title={comp.content}
-                                    >
-                                      {comp.type}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const LibraryView = ({ items, onOpenParsed }: { items: LibraryItem[], onOpenParsed: (id: string) => void }) => {
+const LibraryView = ({ items }: { items: LibraryItem[] }) => {
   return (
     <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10">
       <header className="mb-12">
@@ -921,69 +805,21 @@ const LibraryView = ({ items, onOpenParsed }: { items: LibraryItem[], onOpenPars
           {items.map((item) => (
             <div 
               key={item.id}
-              className="bg-surface-container-low p-6 rounded-xl border border-outline-variant/10 hover:border-primary/30 transition-all group editorial-shadow flex flex-col"
+              onClick={() => window.open(item.path, '_blank')}
+              className="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/10 hover:border-primary/30 transition-all cursor-pointer group editorial-shadow"
             >
-              <div className="flex justify-between items-start mb-6">
-                <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center group-hover:scale-110 transition-transform">
-                  <FileText className="text-primary" />
-                </div>
-                <div className="text-right">
-                  <p className="font-label text-[8px] uppercase tracking-widest font-bold text-on-surface-variant/60">Size</p>
-                  <p className="font-mono text-[10px] font-medium">{(item.size / (1024 * 1024)).toFixed(1)} MB</p>
-                </div>
+              <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                <FileText className="text-primary" />
               </div>
-
-              <div className="flex-1">
-                <h3 className="font-headline text-lg font-bold text-on-surface mb-1 truncate" title={item.name}>
-                  {item.name}
-                </h3>
-                <p className="text-[10px] text-on-surface-variant font-label uppercase tracking-widest mb-4">
-                  {new Date(item.uploadedAt).toLocaleDateString()}
-                </p>
-
-                <div className="space-y-3 mb-6">
-                  <div className="flex items-center gap-2">
-                    {item.status === 'processing' && <Loader2 className="animate-spin text-primary" size={14} />}
-                    {item.status === 'completed' && <CheckCircle2 className="text-emerald-500" size={14} />}
-                    {item.status === 'failed' && <AlertCircle className="text-error" size={14} />}
-                    <span className={cn(
-                      "font-label text-[9px] uppercase tracking-widest font-bold",
-                      item.status === 'processing' && "text-primary",
-                      item.status === 'completed' && "text-emerald-600",
-                      item.status === 'failed' && "text-error",
-                      item.status === 'pending' && "text-on-surface-variant"
-                    )}>
-                      {item.status === 'processing' ? `Parsing (${item.progress}%)` : item.status}
-                    </span>
-                  </div>
-
-                  {item.status === 'processing' && (
-                    <div className="h-1 w-full bg-surface-container-high rounded-full overflow-hidden">
-                      <motion.div 
-                        className="h-full bg-primary"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${item.progress}%` }}
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <button 
-                  onClick={() => window.open(item.path, '_blank')}
-                  className="flex-1 bg-surface-container-high text-on-surface font-label text-[10px] uppercase tracking-widest font-bold py-3 rounded-lg hover:bg-surface-container-highest transition-colors"
-                >
-                  Source
-                </button>
-                {item.status === 'completed' && (
-                  <button 
-                    className="flex-1 bg-primary text-on-primary font-label text-[10px] uppercase tracking-widest font-bold py-3 rounded-lg hover:shadow-lg hover:shadow-primary/20 transition-all"
-                    onClick={() => onOpenParsed(item.id)}
-                  >
-                    Open
-                  </button>
-                )}
+              <h3 className="font-headline text-lg font-bold text-on-surface mb-1 truncate" title={item.name}>
+                {item.name}
+              </h3>
+              <p className="text-[10px] text-on-surface-variant font-label uppercase tracking-widest mb-6">
+                {(item.size / (1024 * 1024)).toFixed(2)} MB • {new Date(item.uploadedAt).toLocaleDateString()}
+              </p>
+              <div className="flex items-center gap-2 text-primary font-bold text-xs uppercase tracking-widest">
+                <span>Open Resource</span>
+                <Maximize2 size={14} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
               </div>
             </div>
           ))}
@@ -1313,7 +1149,6 @@ export default function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
-  const [selectedParsedId, setSelectedParsedId] = useState<string | null>(null);
 
   const fetchLibrary = async () => {
     try {
@@ -1330,16 +1165,6 @@ export default function App() {
   useEffect(() => {
     fetchLibrary();
   }, []);
-
-  // Poll library status if any item is processing
-  useEffect(() => {
-    const hasProcessingItems = libraryItems.some(item => item.status === 'processing' || item.status === 'pending');
-    
-    if (hasProcessingItems) {
-      const interval = setInterval(fetchLibrary, 3000);
-      return () => clearInterval(interval);
-    }
-  }, [libraryItems]);
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">
@@ -1373,21 +1198,7 @@ export default function App() {
               {view === 'study' && <StudyView />}
               {view === 'practice' && <PracticeView />}
               {view === 'timeline' && <NightlyReviewView />}
-              {view === 'library' && (
-                <LibraryView 
-                  items={libraryItems} 
-                  onOpenParsed={(id) => {
-                    setSelectedParsedId(id);
-                    setView('deconstructed');
-                  }} 
-                />
-              )}
-              {view === 'deconstructed' && selectedParsedId && (
-                <DeconstructedView 
-                  id={selectedParsedId} 
-                  onBack={() => setView('library')} 
-                />
-              )}
+              {view === 'library' && <LibraryView items={libraryItems} />}
             </motion.div>
           </AnimatePresence>
         </main>
