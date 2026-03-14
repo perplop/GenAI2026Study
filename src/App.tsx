@@ -36,7 +36,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 import { cn } from './lib/utils';
-import { Course, Activity, Module, QuizQuestion } from './types';
+import { Course, Activity, Module, QuizQuestion, LibraryItem } from './types';
 
 // --- Mock Data ---
 
@@ -498,7 +498,7 @@ const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
   </div>
 );
 
-const FileUploader = () => {
+const FileUploader = ({ onUploadSuccess }: { onUploadSuccess: () => void }) => {
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -507,14 +507,33 @@ const FileUploader = () => {
 
   const MAX_SIZE = 200 * 1024 * 1024; // 200MB
 
-  const handleFile = (selectedFile: File) => {
+  const handleFile = async (selectedFile: File) => {
     setError(null);
     if (selectedFile.size > MAX_SIZE) {
       setError("File size exceeds 200MB limit.");
       return;
     }
     setFile(selectedFile);
-    simulateUpload();
+    
+    const formData = new FormData();
+    formData.append("file", selectedFile);
+
+    try {
+      // Start progress simulation
+      simulateUpload();
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error("Upload failed");
+      
+      onUploadSuccess();
+    } catch (err) {
+      setError("Failed to upload file to server.");
+      setFile(null);
+    }
   };
 
   const simulateUpload = () => {
@@ -527,7 +546,7 @@ const FileUploader = () => {
         }
         return prev + 5;
       });
-    }, 100);
+    }, 150);
   };
 
   const onDragOver = (e: React.DragEvent) => {
@@ -657,7 +676,7 @@ const FileUploader = () => {
   );
 };
 
-const CurateView = () => (
+const CurateView = ({ onUploadSuccess }: { onUploadSuccess: () => void }) => (
   <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
     <div className="lg:col-span-8 space-y-10">
       <header className="space-y-2">
@@ -667,7 +686,7 @@ const CurateView = () => (
         </p>
       </header>
       <section className="relative group">
-        <FileUploader />
+        <FileUploader onUploadSuccess={onUploadSuccess} />
       </section>
       <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
@@ -729,6 +748,49 @@ const CurateView = () => (
     </aside>
   </div>
 );
+
+const LibraryView = ({ items }: { items: LibraryItem[] }) => {
+  return (
+    <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10">
+      <header className="mb-12">
+        <h1 className="font-headline text-5xl font-extrabold tracking-tight text-on-surface">Your Library</h1>
+        <p className="text-xl text-on-surface-variant mt-2 italic font-body">Access your deconstructed textbooks and study materials.</p>
+      </header>
+
+      {items.length === 0 ? (
+        <div className="bg-surface-container-low rounded-2xl p-20 text-center border-2 border-dashed border-outline-variant/20">
+          <Library size={64} className="mx-auto text-on-surface-variant/20 mb-6" />
+          <h3 className="font-headline text-2xl font-bold text-on-surface">Your library is empty</h3>
+          <p className="text-on-surface-variant mt-2">Upload your first textbook in the Curate section to get started.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          {items.map((item) => (
+            <div 
+              key={item.id}
+              onClick={() => window.open(item.path, '_blank')}
+              className="bg-surface-container-lowest p-6 rounded-xl border border-outline-variant/10 hover:border-primary/30 transition-all cursor-pointer group editorial-shadow"
+            >
+              <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+                <FileText className="text-primary" />
+              </div>
+              <h3 className="font-headline text-lg font-bold text-on-surface mb-1 truncate" title={item.name}>
+                {item.name}
+              </h3>
+              <p className="text-[10px] text-on-surface-variant font-label uppercase tracking-widest mb-6">
+                {(item.size / (1024 * 1024)).toFixed(2)} MB • {new Date(item.uploadedAt).toLocaleDateString()}
+              </p>
+              <div className="flex items-center gap-2 text-primary font-bold text-xs uppercase tracking-widest">
+                <span>Open Resource</span>
+                <Maximize2 size={14} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const AISummary = () => {
   const [summary, setSummary] = useState<string | null>(null);
@@ -1049,6 +1111,23 @@ export default function App() {
   const [isNightlyFABVisible, setIsNightlyFABVisible] = useState(true);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
+
+  const fetchLibrary = async () => {
+    try {
+      const response = await fetch("/api/library");
+      if (response.ok) {
+        const data = await response.json();
+        setLibraryItems(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch library:", error);
+    }
+  };
+
+  useEffect(() => {
+    fetchLibrary();
+  }, []);
 
   return (
     <div className="min-h-screen bg-surface flex flex-col">
@@ -1078,10 +1157,11 @@ export default function App() {
               transition={{ duration: 0.3 }}
             >
               {view === 'dashboard' && <DashboardView setView={setView} />}
-              {view === 'curate' && <CurateView />}
+              {view === 'curate' && <CurateView onUploadSuccess={fetchLibrary} />}
               {view === 'study' && <StudyView />}
               {view === 'practice' && <PracticeView />}
               {view === 'timeline' && <NightlyReviewView />}
+              {view === 'library' && <LibraryView items={libraryItems} />}
             </motion.div>
           </AnimatePresence>
         </main>

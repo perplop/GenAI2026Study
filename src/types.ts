@@ -29,3 +29,11 @@ export interface QuizQuestion {
   options: string[];
   correctAnswer: number;
 }
+
+export interface LibraryItem {
+  id: string;
+  name: string;
+  size: number;
+  path: string;
+  uploadedAt: string;
+}
