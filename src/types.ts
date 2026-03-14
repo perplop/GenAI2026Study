@@ -29,3 +29,29 @@ export interface QuizQuestion {
   options: string[];
   correctAnswer: number;
 }
+
+// --- Textbook parsing & Gemini analysis types ---
+
+export interface TextbookSection {
+  title: string;
+  summary: string;
+  keyTerms: string[];
+  estimatedMinutes: number;
+}
+
+export interface StudyDay {
+  day: number;
+  topic: string;
+  activities: string[];
+}
+
+export interface GeminiChunkResult {
+  chapterTitle: string;
+  sections: TextbookSection[];
+  studyPlan: StudyDay[];
+}
+
+export interface TextbookAnalysis {
+  bookTitle: string;
+  chunkResults: GeminiChunkResult[];
+}

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, 
   BookOpen, 
@@ -34,9 +34,10 @@ import {
   X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { GoogleGenAI } from "@google/genai";
+import OpenAI from "openai";
 import { cn } from './lib/utils';
-import { Course, Activity, Module, QuizQuestion } from './types';
+import { Course, Activity, Module, QuizQuestion, TextbookAnalysis, GeminiChunkResult } from './types';
+import { parseTextbook, TextbookChunk } from './lib/pdfParser';
 
 // --- Mock Data ---
 
@@ -498,119 +499,521 @@ const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
   </div>
 );
 
-const CurateView = () => (
-  <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
-    <div className="lg:col-span-8 space-y-10">
-      <header className="space-y-2">
-        <h1 className="font-headline text-5xl font-extrabold tracking-tight text-on-surface">Curate Your Library</h1>
-        <p className="text-xl text-on-surface-variant max-w-2xl leading-relaxed">
-          Upload your course materials. Our AI scholar meticulously deconstructs your textbook into digestible nodes of knowledge.
-        </p>
-      </header>
-      <section className="relative group">
-        <div className="bg-surface-container-low rounded-xl p-1 border-2 border-dashed border-outline-variant/30 group-hover:border-primary/40 transition-all">
-          <div className="bg-surface-container-lowest rounded-lg p-12 flex flex-col items-center text-center editorial-shadow">
-            <div className="relative mb-8 w-64 h-48 flex items-center justify-center">
-              <div className="absolute inset-0 bg-primary-container/20 rounded-xl rotate-3 scale-95 transition-transform group-hover:rotate-6"></div>
-              <div className="absolute inset-0 bg-secondary-container/20 rounded-xl -rotate-2 scale-95 transition-transform group-hover:-rotate-4"></div>
-              <div className="relative bg-white p-6 rounded-lg editorial-shadow border border-outline-variant/10 w-32 h-44 z-10 flex flex-col justify-between">
-                <div className="space-y-2">
-                  <div className="h-2 w-full bg-surface-container-highest rounded-full"></div>
-                  <div className="h-2 w-3/4 bg-surface-container-highest rounded-full"></div>
-                  <div className="h-2 w-5/6 bg-surface-container-highest rounded-full"></div>
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+const sleep = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
+
+/** Extract retry-after seconds from a Gemini 429 error message, fallback 60 s */
+function getRetryDelay(err: unknown): number {
+  const msg = err instanceof Error ? err.message : String(err);
+  const match = msg.match(/retry[^\d]*(\d+(?:\.\d+)?)\s*s/i);
+  return match ? Math.ceil(parseFloat(match[1])) * 1000 : 60_000;
+}
+
+const OPENAI_BASE_URL = "https://vjioo4r1vyvcozuj.us-east-2.aws.endpoints.huggingface.cloud/v1";
+const OPENAI_MODEL = "openai/gpt-oss-120b";
+
+function makeOpenAIClient(): OpenAI {
+  return new OpenAI({
+    apiKey: import.meta.env.VITE_OPENAI_API_KEY ?? "test",
+    baseURL: OPENAI_BASE_URL,
+    dangerouslyAllowBrowser: true,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI helper: analyze a single parsed chunk (with retry on 429)
+// ---------------------------------------------------------------------------
+async function analyzeChunkWithGemini(
+  ai: OpenAI,
+  chunk: TextbookChunk,
+  fileName: string,
+  maxRetries = 3
+): Promise<GeminiChunkResult> {
+  // Cap text to ~20 000 chars to stay within token limits
+  const textContent = chunk.text.slice(0, 20000);
+
+  const systemPrompt = `You are an AI study assistant. Analyze the textbook section below and return ONLY valid JSON (no markdown, no code fences).
+
+File: ${fileName}
+Section: ${chunk.chapterTitle} (Pages ${chunk.startPage}–${chunk.endPage})
+
+Content:
+${textContent}
+
+Return this JSON structure:
+{
+  "chapterTitle": "clean, readable chapter title",
+  "sections": [
+    {
+      "title": "section name",
+      "summary": "2-3 sentence summary",
+      "keyTerms": ["term1", "term2", "term3"],
+      "estimatedMinutes": 25
+    }
+  ],
+  "studyPlan": [
+    {
+      "day": 1,
+      "topic": "topic name",
+      "activities": ["Read section X", "Create flashcards for key terms", "Try practice problems"]
+    }
+  ]
+}
+
+Study plan rules:
+- 30–45 min sessions per day
+- Mix reading, flashcard creation, and practice problems
+- Add a review session every 3–4 days
+- Progress from overview → details → application`;
+
+  // Build user message content: images first, then the text prompt
+  const userContent: OpenAI.Chat.ChatCompletionContentPart[] = [];
+  for (const dataUrl of chunk.imageDataUrls.slice(0, 3)) {
+    userContent.push({ type: 'image_url', image_url: { url: dataUrl } });
+  }
+  userContent.push({ type: 'text', text: systemPrompt });
+
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await ai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages: [{ role: 'user', content: userContent }],
+        response_format: { type: 'json_object' },
+      });
+
+      const raw = response.choices[0]?.message?.content ?? '{}';
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        console.error('Failed to parse JSON for chunk:', chunk.chapterTitle, raw);
+      }
+
+      return {
+        chapterTitle: parsed.chapterTitle ?? chunk.chapterTitle,
+        sections: Array.isArray(parsed.sections) ? parsed.sections : [],
+        studyPlan: Array.isArray(parsed.studyPlan) ? parsed.studyPlan : [],
+      };
+    } catch (err) {
+      lastErr = err;
+      const is429 = String(err).includes('429') || String(err).includes('rate_limit') || String(err).includes('RESOURCE_EXHAUSTED');
+      if (is429 && attempt < maxRetries) {
+        const delay = getRetryDelay(err);
+        console.warn(`Rate limited. Retrying chunk "${chunk.chapterTitle}" in ${delay / 1000}s… (attempt ${attempt + 1}/${maxRetries})`);
+        await sleep(delay);
+      } else {
+        throw err;
+      }
+    }
+  }
+  throw lastErr;
+}
+
+// ---------------------------------------------------------------------------
+// CurateView — functional, with real upload + parse + Gemini analysis
+// ---------------------------------------------------------------------------
+const CurateView = () => {
+  type Status = 'idle' | 'parsing' | 'analyzing' | 'done' | 'error';
+  const [status, setStatus] = useState<Status>('idle');
+  const [parseProgress, setParseProgress] = useState({ current: 0, total: 0 });
+  const [analyzeProgress, setAnalyzeProgress] = useState({ current: 0, total: 0 });
+  const [analysis, setAnalysis] = useState<TextbookAnalysis | null>(null);
+  const [expandedChapter, setExpandedChapter] = useState<number | null>(0);
+  const [error, setError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFile = async (file: File) => {
+    if (!file || file.type !== 'application/pdf') {
+      setError('Please upload a PDF file.');
+      return;
+    }
+    setError(null);
+    setStatus('parsing');
+    setParseProgress({ current: 0, total: 0 });
+
+    try {
+      // Step 1: Parse the PDF
+      const parsedTextbook = await parseTextbook(file, (current, total) => {
+        setParseProgress({ current, total });
+      });
+
+      // Step 2: Analyze each chunk with Gemini
+      setStatus('analyzing');
+      setAnalyzeProgress({ current: 0, total: parsedTextbook.chunks.length });
+
+      const ai = makeOpenAIClient();
+      const chunkResults: GeminiChunkResult[] = [];
+
+      for (let i = 0; i < parsedTextbook.chunks.length; i++) {
+        // Brief pause between chunks to avoid hogging the shared server
+        if (i > 0) await sleep(1000);
+        const result = await analyzeChunkWithGemini(
+          ai,
+          parsedTextbook.chunks[i],
+          parsedTextbook.fileName
+        );
+        chunkResults.push(result);
+        setAnalyzeProgress({ current: i + 1, total: parsedTextbook.chunks.length });
+      }
+
+      setAnalysis({
+        bookTitle: parsedTextbook.fileName.replace(/\.pdf$/i, ''),
+        chunkResults,
+      });
+      setExpandedChapter(0);
+      setStatus('done');
+    } catch (e) {
+      console.error('CurateView error:', e);
+      const is429 = String(e).includes('429') || String(e).includes('RESOURCE_EXHAUSTED');
+      setError(
+        is429
+          ? 'API rate limit reached. Please wait a moment and try again.'
+          : 'Something went wrong. Check the console for details.'
+      );
+      setStatus('error');
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) handleFile(file);
+    // Reset input so the same file can be re-uploaded
+    e.target.value = '';
+  };
+
+  const parsePercent =
+    parseProgress.total > 0
+      ? Math.round((parseProgress.current / parseProgress.total) * 100)
+      : 0;
+
+  // ---- IDLE / ERROR state ----
+  if (status === 'idle' || status === 'error') {
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
+        <div className="lg:col-span-8 space-y-10">
+          <header className="space-y-2">
+            <h1 className="font-headline text-5xl font-extrabold tracking-tight text-on-surface">Curate Your Library</h1>
+            <p className="text-xl text-on-surface-variant max-w-2xl leading-relaxed">
+              Upload your course materials. Our AI scholar deconstructs your textbook into a structured study plan.
+            </p>
+          </header>
+          <section className="relative group">
+            <div
+              className="bg-surface-container-low rounded-xl p-1 border-2 border-dashed border-outline-variant/30 group-hover:border-primary/40 transition-all cursor-pointer"
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const file = e.dataTransfer.files?.[0];
+                if (file) handleFile(file);
+              }}
+            >
+              <div className="bg-surface-container-lowest rounded-lg p-12 flex flex-col items-center text-center editorial-shadow">
+                <div className="relative mb-8 w-64 h-48 flex items-center justify-center">
+                  <div className="absolute inset-0 bg-primary-container/20 rounded-xl rotate-3 scale-95 transition-transform group-hover:rotate-6"></div>
+                  <div className="absolute inset-0 bg-secondary-container/20 rounded-xl -rotate-2 scale-95 transition-transform group-hover:-rotate-4"></div>
+                  <div className="relative bg-white p-6 rounded-lg editorial-shadow border border-outline-variant/10 w-32 h-44 z-10 flex flex-col justify-between">
+                    <div className="space-y-2">
+                      <div className="h-2 w-full bg-surface-container-highest rounded-full"></div>
+                      <div className="h-2 w-3/4 bg-surface-container-highest rounded-full"></div>
+                      <div className="h-2 w-5/6 bg-surface-container-highest rounded-full"></div>
+                    </div>
+                    <div className="flex justify-center">
+                      <Sparkles className="text-primary" size={32} />
+                    </div>
+                  </div>
+                  <div className="absolute top-0 right-0 transform translate-x-4 -translate-y-4 bg-primary-container p-3 rounded-full editorial-shadow">
+                    <FileText className="text-on-primary-container" size={16} />
+                  </div>
+                  <div className="absolute bottom-4 left-0 transform -translate-x-6 bg-tertiary-container p-3 rounded-full editorial-shadow">
+                    <HelpCircle className="text-on-tertiary-container" size={16} />
+                  </div>
                 </div>
-                <div className="flex justify-center">
-                  <Sparkles className="text-primary" size={32} />
-                </div>
-              </div>
-              <div className="absolute top-0 right-0 transform translate-x-4 -translate-y-4 bg-primary-container p-3 rounded-full editorial-shadow">
-                <FileText className="text-on-primary-container" size={16} />
-              </div>
-              <div className="absolute bottom-4 left-0 transform -translate-x-6 bg-tertiary-container p-3 rounded-full editorial-shadow">
-                <HelpCircle className="text-on-tertiary-container" size={16} />
-              </div>
-            </div>
-            <div className="space-y-4">
-              <h3 className="font-headline text-2xl font-bold text-on-surface">Processing...</h3>
-              <div className="max-w-xs mx-auto space-y-2">
-                <ProgressBar progress={45} className="h-2" />
-                <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
-                  <span>Course Completion</span>
-                  <span>45%</span>
-                </div>
-                <p className="text-sm font-label text-on-surface-variant/80 italic mt-2">12 of 28 modules finished</p>
-              </div>
-            </div>
-            <div className="mt-12 flex flex-col items-center gap-4">
-              <button className="bg-primary text-on-primary px-8 py-4 rounded-xl font-headline font-bold text-lg hover:bg-primary-dim transition-all editorial-shadow flex items-center gap-3">
-                <Upload size={24} />
-                Upload New Textbook
-              </button>
-              <p className="font-label text-sm text-on-surface-variant">PDF, EPUB, or DOCX up to 50MB</p>
-            </div>
-          </div>
-        </div>
-      </section>
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
-          <Zap className="text-primary" size={32} />
-          <h4 className="font-headline text-xl font-bold">Concept Mapping</h4>
-          <p className="text-on-surface-variant leading-relaxed">Our AI identifies cross-chapter dependencies to build a logical learning path tailored to your curriculum.</p>
-        </div>
-        <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
-          <TrendingUp className="text-secondary" size={32} />
-          <h4 className="font-headline text-xl font-bold">Metadata Extraction</h4>
-          <p className="text-on-surface-variant leading-relaxed">Automatically tagging keywords, key figures, and essential dates for instant flashcard generation.</p>
-        </div>
-      </section>
-    </div>
-    <aside className="lg:col-span-4 lg:sticky lg:top-28 h-fit space-y-6">
-      <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
-        <div className="bg-primary px-6 py-8 text-on-primary">
-          <div className="flex justify-between items-start">
-            <div className="space-y-1">
-              <h2 className="font-headline text-2xl font-bold tracking-tight">Biology 101</h2>
-              <p className="text-on-primary/80 font-label text-sm">Chapter 4: Cell Structure</p>
-            </div>
-            <span className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
-              <BookOpen className="text-white" />
-            </span>
-          </div>
-        </div>
-        <div className="p-6 space-y-8">
-          <div>
-            <h3 className="font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest mb-4">Extracted Table of Contents</h3>
-            <div className="space-y-1">
-              {MODULES.map((mod) => (
-                <div 
-                  key={mod.id}
-                  className={cn(
-                    "group flex items-center gap-4 p-3 rounded-lg transition-all cursor-pointer",
-                    mod.status === 'completed' && "bg-surface-container-lowest border border-primary/10",
-                    mod.status === 'processing' && "bg-primary-container/20 border border-primary/20 animate-pulse",
-                    mod.status === 'locked' && "hover:bg-surface-container-high opacity-50"
+                <div className="mt-4 flex flex-col items-center gap-4">
+                  <button
+                    className="bg-primary text-on-primary px-8 py-4 rounded-xl font-headline font-bold text-lg hover:bg-primary-dim transition-all editorial-shadow flex items-center gap-3"
+                    onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                  >
+                    <Upload size={24} />
+                    Upload New Textbook
+                  </button>
+                  <p className="font-label text-sm text-on-surface-variant">PDF up to 50 MB — drag &amp; drop supported</p>
+                  {error && (
+                    <p className="font-label text-sm text-error font-semibold">{error}</p>
                   )}
-                >
-                  {mod.status === 'completed' && <CheckCircle2 size={20} className="text-primary fill-primary/10" />}
-                  {mod.status === 'processing' && <Clock size={20} className="text-primary" />}
-                  {mod.status === 'locked' && <Settings size={20} className="text-on-surface-variant" />}
-                  <span className={cn(
-                    "font-headline text-sm",
-                    mod.status === 'completed' && "font-semibold text-on-surface",
-                    mod.status === 'processing' && "font-semibold text-primary",
-                    mod.status === 'locked' && "font-medium text-on-surface-variant"
-                  )}>
-                    {mod.title}
-                  </span>
                 </div>
-              ))}
+              </div>
+            </div>
+          </section>
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
+              <Zap className="text-primary" size={32} />
+              <h4 className="font-headline text-xl font-bold">Concept Mapping</h4>
+              <p className="text-on-surface-variant leading-relaxed">AI identifies cross-chapter dependencies to build a logical learning path tailored to your curriculum.</p>
+            </div>
+            <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
+              <TrendingUp className="text-secondary" size={32} />
+              <h4 className="font-headline text-xl font-bold">Image-Aware Parsing</h4>
+              <p className="text-on-surface-variant leading-relaxed">Diagrams and figures are detected and passed directly to the AI vision model for full context extraction.</p>
+            </div>
+          </section>
+        </div>
+        <aside className="lg:col-span-4 lg:sticky lg:top-28 h-fit">
+          <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+            <div className="bg-primary px-6 py-8 text-on-primary">
+              <div className="flex justify-between items-start">
+                <div className="space-y-1">
+                  <h2 className="font-headline text-2xl font-bold tracking-tight">Your Library</h2>
+                  <p className="text-on-primary/80 font-label text-sm">No textbook loaded yet</p>
+                </div>
+                <span className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
+                  <BookOpen className="text-white" />
+                </span>
+              </div>
+            </div>
+            <div className="p-6">
+              <p className="text-on-surface-variant font-label text-sm italic">Upload a PDF to see the extracted table of contents here.</p>
+            </div>
+          </div>
+        </aside>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="application/pdf"
+          className="hidden"
+          onChange={handleInputChange}
+        />
+      </div>
+    );
+  }
+
+  // ---- PARSING state ----
+  if (status === 'parsing') {
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[60vh] gap-8">
+        <div className="w-full max-w-md space-y-6 text-center">
+          <div className="w-16 h-16 mx-auto border-4 border-primary border-t-transparent rounded-full animate-spin" />
+          <div>
+            <h2 className="font-headline text-2xl font-bold text-on-surface mb-1">Parsing Textbook</h2>
+            <p className="font-label text-sm text-on-surface-variant">
+              Extracting text and detecting images from each page…
+            </p>
+          </div>
+          <div className="space-y-2">
+            <ProgressBar progress={parsePercent} className="h-3" />
+            <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
+              <span>Page {parseProgress.current} of {parseProgress.total || '…'}</span>
+              <span>{parsePercent}%</span>
             </div>
           </div>
         </div>
       </div>
-    </aside>
-  </div>
-);
+    );
+  }
+
+  // ---- ANALYZING state ----
+  if (status === 'analyzing') {
+    const analyzePercent =
+      analyzeProgress.total > 0
+        ? Math.round((analyzeProgress.current / analyzeProgress.total) * 100)
+        : 0;
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[60vh] gap-8">
+        <div className="w-full max-w-md space-y-6 text-center">
+          <Sparkles className="text-primary mx-auto animate-pulse" size={48} />
+          <div>
+            <h2 className="font-headline text-2xl font-bold text-on-surface mb-1">AI Scholar is Analyzing</h2>
+            <p className="font-label text-sm text-on-surface-variant">
+              Sending chunks to GPT-OSS — building sections, key terms, and your study plan…
+            </p>
+          </div>
+          <div className="space-y-2">
+            <ProgressBar progress={analyzePercent} className="h-3" />
+            <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
+              <span>Chunk {analyzeProgress.current} of {analyzeProgress.total}</span>
+              <span>{analyzePercent}%</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- DONE state ----
+  if (!analysis) return null;
+
+  const allStudyDays = analysis.chunkResults.flatMap((r) => r.studyPlan);
+  const todayPlan = allStudyDays.find((d) => d.day === 1) ?? allStudyDays[0] ?? null;
+  const allKeyTerms = Array.from(
+    new Set(analysis.chunkResults.flatMap((r) => r.sections.flatMap((s) => s.keyTerms)))
+  ).sort();
+
+  return (
+    <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
+      {/* Left: Chapters + Sections + Glossary */}
+      <div className="lg:col-span-8 space-y-8">
+        <header className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="font-headline text-4xl font-extrabold tracking-tight text-on-surface">{analysis.bookTitle}</h1>
+            <p className="text-on-surface-variant mt-1 font-label text-sm">
+              {analysis.chunkResults.length} chapter{analysis.chunkResults.length !== 1 ? 's' : ''} extracted
+            </p>
+          </div>
+          <button
+            onClick={() => { setStatus('idle'); setAnalysis(null); }}
+            className="flex items-center gap-2 text-sm font-label font-bold text-primary hover:underline shrink-0"
+          >
+            <Upload size={16} /> Upload New
+          </button>
+        </header>
+
+        <div className="space-y-4">
+          {analysis.chunkResults.map((chunk, idx) => (
+            <div key={idx} className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+              <button
+                className="w-full flex items-center justify-between px-6 py-5 text-left hover:bg-surface-container-high transition-all"
+                onClick={() => setExpandedChapter(expandedChapter === idx ? null : idx)}
+              >
+                <div className="flex items-center gap-4">
+                  <span className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center font-headline text-sm font-bold text-on-primary-container shrink-0">
+                    {idx + 1}
+                  </span>
+                  <span className="font-headline font-bold text-on-surface">{chunk.chapterTitle}</span>
+                </div>
+                {expandedChapter === idx ? <ChevronLeft size={20} className="text-on-surface-variant rotate-90" /> : <ChevronRight size={20} className="text-on-surface-variant -rotate-90" />}
+              </button>
+
+              <AnimatePresence>
+                {expandedChapter === idx && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="px-6 pb-6 space-y-4 border-t border-outline-variant/10">
+                      {chunk.sections.length === 0 && (
+                        <p className="text-on-surface-variant font-label text-sm italic pt-4">No sections extracted for this chunk.</p>
+                      )}
+                      {chunk.sections.map((sec, sIdx) => (
+                        <div key={sIdx} className="pt-4 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <BookOpen size={16} className="text-primary shrink-0" />
+                            <h4 className="font-headline font-bold text-on-surface text-sm">{sec.title}</h4>
+                            <span className="ml-auto font-label text-xs text-on-surface-variant shrink-0 flex items-center gap-1">
+                              <Clock size={12} /> {sec.estimatedMinutes} min
+                            </span>
+                          </div>
+                          <p className="font-body text-sm text-on-surface-variant leading-relaxed pl-6">{sec.summary}</p>
+                          {sec.keyTerms && sec.keyTerms.length > 0 && (
+                            <div className="flex flex-wrap gap-2 pl-6">
+                              {sec.keyTerms.map((term, tIdx) => (
+                                <span key={tIdx} className="bg-primary-container/30 text-on-primary-container px-2 py-0.5 rounded-full font-label text-xs font-medium">
+                                  {term}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+          ))}
+        </div>
+
+        {/* Glossary */}
+        {allKeyTerms.length > 0 && (
+          <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+            <div className="px-6 py-5 border-b border-outline-variant/10 flex items-center gap-3">
+              <Bookmark className="text-secondary" size={20} />
+              <h2 className="font-headline text-xl font-bold text-on-surface">Glossary</h2>
+              <span className="ml-auto font-label text-xs text-on-surface-variant">{allKeyTerms.length} terms</span>
+            </div>
+            <div className="p-6 flex flex-wrap gap-2">
+              {allKeyTerms.map((term, i) => (
+                <span key={i} className="bg-secondary-container/40 text-on-secondary-container px-3 py-1 rounded-full font-label text-sm font-medium border border-secondary/10">
+                  {term}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Right: Today's Plan + Full Study Plan */}
+      <aside className="lg:col-span-4 lg:sticky lg:top-28 h-fit space-y-6">
+
+        {/* Today's Study Plan */}
+        {todayPlan && (
+          <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+            <div className="bg-secondary px-6 py-5 text-on-secondary flex items-center justify-between">
+              <div className="space-y-0.5">
+                <p className="font-label text-xs uppercase tracking-widest font-bold opacity-80">Today</p>
+                <h2 className="font-headline text-lg font-bold tracking-tight">Day {todayPlan.day}: {todayPlan.topic}</h2>
+              </div>
+              <span className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
+                <Flame className="text-white" size={18} />
+              </span>
+            </div>
+            <div className="p-4 space-y-2">
+              {todayPlan.activities.map((act: string, i: number) => (
+                <div key={i} className="flex items-start gap-3 p-3 bg-surface-container-lowest rounded-lg border border-outline-variant/10">
+                  <CheckCircle2 size={16} className="text-secondary mt-0.5 shrink-0" />
+                  <span className="font-label text-sm text-on-surface">{act}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Full Study Plan */}
+        <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+          <div className="bg-primary px-6 py-6 text-on-primary">
+            <div className="flex justify-between items-start">
+              <div className="space-y-1">
+                <h2 className="font-headline text-xl font-bold tracking-tight">Full Study Plan</h2>
+                <p className="text-on-primary/80 font-label text-sm">{allStudyDays.length} sessions total</p>
+              </div>
+              <span className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
+                <Lightbulb className="text-white" />
+              </span>
+            </div>
+          </div>
+          <div className="p-4 space-y-3 max-h-[50vh] overflow-y-auto">
+            {allStudyDays.length === 0 && (
+              <p className="text-on-surface-variant font-label text-sm italic p-2">No study plan generated.</p>
+            )}
+            {allStudyDays.map((day, i) => (
+              <div key={i} className="bg-surface-container-lowest rounded-lg p-4 space-y-2 border border-outline-variant/10">
+                <div className="flex items-center gap-2">
+                  <span className="w-6 h-6 rounded-full bg-secondary-container flex items-center justify-center font-label text-xs font-bold text-on-secondary-container shrink-0">
+                    {day.day}
+                  </span>
+                  <span className="font-headline text-sm font-bold text-on-surface">{day.topic}</span>
+                </div>
+                <ul className="space-y-1 pl-8">
+                  {day.activities.map((act, aIdx) => (
+                    <li key={aIdx} className="flex items-start gap-2 font-label text-xs text-on-surface-variant">
+                      <ArrowRight size={10} className="mt-0.5 shrink-0 text-primary" />
+                      {act}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+};
 
 const AISummary = () => {
   const [summary, setSummary] = useState<string | null>(null);
@@ -619,12 +1022,14 @@ const AISummary = () => {
   const generateSummary = async () => {
     setLoading(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: "Summarize the key points about the cell nucleus in a bulleted list for a biology student.",
+      const ai = makeOpenAIClient();
+      const response = await ai.chat.completions.create({
+        model: OPENAI_MODEL,
+        messages: [
+          { role: 'user', content: 'Summarize the key points about the cell nucleus in a bulleted list for a biology student.' }
+        ],
       });
-      setSummary(response.text || "Could not generate summary.");
+      setSummary(response.choices[0]?.message?.content || "Could not generate summary.");
     } catch (error) {
       console.error("AI Error:", error);
       setSummary("Failed to connect to AI scholar.");
