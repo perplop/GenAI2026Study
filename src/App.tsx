@@ -15,7 +15,6 @@ import {
   History,
   FileText,
   CheckCircle2,
-  Clock,
   ArrowRight,
   Upload,
   PenTool,
@@ -36,8 +35,10 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import OpenAI from "openai";
 import { cn } from './lib/utils';
-import { Course, Activity, Module, QuizQuestion, LibraryItem, TextbookAnalysis, GeminiChunkResult } from './types';
-import { parseTextbook, TextbookChunk } from './lib/pdfParser';
+import { Course, Activity, Module, QuizQuestion, LibraryItem, AnalyzedSection, PlanDay, SavedStudyPlan } from './types';
+import { parseTextbook, ParsedPage } from './lib/pdfParser';
+import { splitIntoSections } from './lib/sectionSplitter';
+import { scheduleDays, savePlan, loadAllPlans, deletePlan } from './lib/studyPlanner';
 
 // --- Mock Data ---
 
@@ -504,12 +505,6 @@ const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
 // ---------------------------------------------------------------------------
 const sleep = (ms: number) => new Promise<void>(res => setTimeout(res, ms));
 
-/** Extract retry-after seconds from a Gemini 429 error message, fallback 60 s */
-function getRetryDelay(err: unknown): number {
-  const msg = err instanceof Error ? err.message : String(err);
-  const match = msg.match(/retry[^\d]*(\d+(?:\.\d+)?)\s*s/i);
-  return match ? Math.ceil(parseFloat(match[1])) * 1000 : 60_000;
-}
 
 const OPENAI_BASE_URL = "https://vjioo4r1vyvcozuj.us-east-2.aws.endpoints.huggingface.cloud/v1";
 const OPENAI_MODEL = "openai/gpt-oss-120b";
@@ -523,105 +518,43 @@ function makeOpenAIClient(): OpenAI {
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI helper: analyze a single parsed chunk (with retry on 429)
+// AI enrichment: ONE call — returns a short learning goal per day
 // ---------------------------------------------------------------------------
-async function analyzeChunkWithGemini(
-  ai: OpenAI,
-  chunk: TextbookChunk,
-  fileName: string,
-  maxRetries = 3
-): Promise<GeminiChunkResult> {
-  // Cap text to ~20 000 chars to stay within token limits
-  const textContent = chunk.text.slice(0, 20000);
-
-  const systemPrompt = `You are an AI study assistant. Analyze the textbook section below and return ONLY valid JSON (no markdown, no code fences).
-
-File: ${fileName}
-Section: ${chunk.chapterTitle} (Pages ${chunk.startPage}–${chunk.endPage})
-
-Content:
-${textContent}
-
-Return this JSON structure:
-{
-  "chapterTitle": "clean, readable chapter title",
-  "sections": [
-    {
-      "title": "section name",
-      "summary": "2-3 sentence summary",
-      "keyTerms": ["term1", "term2", "term3"],
-      "estimatedMinutes": 25
-    }
-  ],
-  "studyPlan": [
-    {
-      "day": 1,
-      "topic": "topic name",
-      "activities": ["Read section X", "Create flashcards for key terms", "Try practice problems"]
-    }
-  ]
+async function enrichDaysWithAI(days: PlanDay[]): Promise<PlanDay[]> {
+  if (days.length === 0) return days;
+  const ai = makeOpenAIClient();
+  const prompt =
+    `For each study day below, write a concise learning goal (max 8 words).\n` +
+    `Return ONLY a JSON object: {"goals": ["...", ...]}\n\n` +
+    days.map(d => `Day ${d.day}: ${d.sections.map(s => s.title).join(', ') || 'Review'}`).join('\n');
+  try {
+    const resp = await ai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
+    });
+    const goals: string[] = JSON.parse(resp.choices[0]?.message?.content ?? '{}').goals ?? [];
+    return days.map((d, i) => ({ ...d, mainConceptFocus: goals[i] || d.mainConceptFocus }));
+  } catch {
+    return days; // fallback: rule-derived title stays
+  }
 }
 
-Study plan rules:
-- 30–45 min sessions per day
-- Mix reading, flashcard creation, and practice problems
-- Add a review session every 3–4 days
-- Progress from overview → details → application`;
-
-  // Build user message content: images first, then the text prompt
-  const userContent: OpenAI.Chat.ChatCompletionContentPart[] = [];
-  for (const dataUrl of chunk.imageDataUrls.slice(0, 3)) {
-    userContent.push({ type: 'image_url', image_url: { url: dataUrl } });
-  }
-  userContent.push({ type: 'text', text: systemPrompt });
-
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      const response = await ai.chat.completions.create({
-        model: OPENAI_MODEL,
-        messages: [{ role: 'user', content: userContent }],
-        response_format: { type: 'json_object' },
-      });
-
-      const raw = response.choices[0]?.message?.content ?? '{}';
-      let parsed: any = {};
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        console.error('Failed to parse JSON for chunk:', chunk.chapterTitle, raw);
-      }
-
-      return {
-        chapterTitle: parsed.chapterTitle ?? chunk.chapterTitle,
-        sections: Array.isArray(parsed.sections) ? parsed.sections : [],
-        studyPlan: Array.isArray(parsed.studyPlan) ? parsed.studyPlan : [],
-      };
-    } catch (err) {
-      lastErr = err;
-      const is429 = String(err).includes('429') || String(err).includes('rate_limit') || String(err).includes('RESOURCE_EXHAUSTED');
-      if (is429 && attempt < maxRetries) {
-        const delay = getRetryDelay(err);
-        console.warn(`Rate limited. Retrying chunk "${chunk.chapterTitle}" in ${delay / 1000}s… (attempt ${attempt + 1}/${maxRetries})`);
-        await sleep(delay);
-      } else {
-        throw err;
-      }
-    }
-  }
-  throw lastErr;
-}
 
 // ---------------------------------------------------------------------------
-// CurateView — functional, with real upload + parse + Gemini analysis
+// CurateView — upload → rule-based parse + split → schedule → save
 // ---------------------------------------------------------------------------
-const CurateView = () => {
-  type Status = 'idle' | 'parsing' | 'analyzing' | 'done' | 'error';
+const CurateView = ({ setView }: { setView: (v: string) => void }) => {
+  type Status = 'idle' | 'parsing' | 'configuring' | 'generating' | 'saved' | 'error';
   const [status, setStatus] = useState<Status>('idle');
   const [parseProgress, setParseProgress] = useState({ current: 0, total: 0 });
-  const [analyzeProgress, setAnalyzeProgress] = useState({ current: 0, total: 0 });
-  const [analysis, setAnalysis] = useState<TextbookAnalysis | null>(null);
-  const [expandedChapter, setExpandedChapter] = useState<number | null>(0);
+  const [parsedData, setParsedData] = useState<{
+    pages: ParsedPage[];
+    totalPages: number;
+    fileName: string;
+    sections: AnalyzedSection[];
+  } | null>(null);
+  const [numDays, setNumDays] = useState(14);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -633,46 +566,36 @@ const CurateView = () => {
     setError(null);
     setStatus('parsing');
     setParseProgress({ current: 0, total: 0 });
-
     try {
-      // Step 1: Parse the PDF
-      const parsedTextbook = await parseTextbook(file, (current, total) => {
-        setParseProgress({ current, total });
-      });
-
-      // Step 2: Analyze each chunk with Gemini
-      setStatus('analyzing');
-      setAnalyzeProgress({ current: 0, total: parsedTextbook.chunks.length });
-
-      const ai = makeOpenAIClient();
-      const chunkResults: GeminiChunkResult[] = [];
-
-      for (let i = 0; i < parsedTextbook.chunks.length; i++) {
-        // Brief pause between chunks to avoid hogging the shared server
-        if (i > 0) await sleep(1000);
-        const result = await analyzeChunkWithGemini(
-          ai,
-          parsedTextbook.chunks[i],
-          parsedTextbook.fileName
-        );
-        chunkResults.push(result);
-        setAnalyzeProgress({ current: i + 1, total: parsedTextbook.chunks.length });
-      }
-
-      setAnalysis({
-        bookTitle: parsedTextbook.fileName.replace(/\.pdf$/i, ''),
-        chunkResults,
-      });
-      setExpandedChapter(0);
-      setStatus('done');
+      const result = await parseTextbook(file, (current, total) => setParseProgress({ current, total }));
+      const sections = splitIntoSections(result.pages, result.totalPages, result.fileName);
+      setParsedData({ pages: result.pages, totalPages: result.totalPages, fileName: result.fileName, sections });
+      setStatus('configuring');
     } catch (e) {
-      console.error('CurateView error:', e);
-      const is429 = String(e).includes('429') || String(e).includes('RESOURCE_EXHAUSTED');
-      setError(
-        is429
-          ? 'API rate limit reached. Please wait a moment and try again.'
-          : 'Something went wrong. Check the console for details.'
-      );
+      console.error(e);
+      setError('Failed to parse the PDF. Please try another file.');
+      setStatus('error');
+    }
+  };
+
+  const handleGeneratePlan = async () => {
+    if (!parsedData) return;
+    setStatus('generating');
+    try {
+      let days = scheduleDays(parsedData.sections, numDays);
+      days = await enrichDaysWithAI(days);
+      savePlan({
+        id: Date.now().toString(),
+        bookTitle: parsedData.fileName.replace(/\.pdf$/i, ''),
+        createdAt: new Date().toISOString(),
+        numDays: days.length,
+        totalSections: parsedData.sections.length,
+        days,
+      });
+      setStatus('saved');
+    } catch (e) {
+      console.error(e);
+      setError('Failed to generate study plan. Check the console.');
       setStatus('error');
     }
   };
@@ -680,16 +603,13 @@ const CurateView = () => {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) handleFile(file);
-    // Reset input so the same file can be re-uploaded
     e.target.value = '';
   };
 
-  const parsePercent =
-    parseProgress.total > 0
-      ? Math.round((parseProgress.current / parseProgress.total) * 100)
-      : 0;
+  const parsePercent = parseProgress.total > 0
+    ? Math.round((parseProgress.current / parseProgress.total) * 100) : 0;
 
-  // ---- IDLE / ERROR state ----
+  // ---- IDLE / ERROR ----
   if (status === 'idle' || status === 'error') {
     return (
       <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
@@ -697,7 +617,7 @@ const CurateView = () => {
           <header className="space-y-2">
             <h1 className="font-headline text-5xl font-extrabold tracking-tight text-on-surface">Curate Your Library</h1>
             <p className="text-xl text-on-surface-variant max-w-2xl leading-relaxed">
-              Upload your course materials. Our AI scholar deconstructs your textbook into a structured study plan.
+              Upload your textbook PDF. The rule-based engine splits it into sections, scores each one, and builds a balanced day-by-day study plan.
             </p>
           </header>
           <section className="relative group">
@@ -705,31 +625,22 @@ const CurateView = () => {
               className="bg-surface-container-low rounded-xl p-1 border-2 border-dashed border-outline-variant/30 group-hover:border-primary/40 transition-all cursor-pointer"
               onClick={() => fileInputRef.current?.click()}
               onDragOver={(e) => e.preventDefault()}
-              onDrop={(e) => {
-                e.preventDefault();
-                const file = e.dataTransfer.files?.[0];
-                if (file) handleFile(file);
-              }}
+              onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files?.[0]; if (f) handleFile(f); }}
             >
               <div className="bg-surface-container-lowest rounded-lg p-12 flex flex-col items-center text-center editorial-shadow">
                 <div className="relative mb-8 w-64 h-48 flex items-center justify-center">
-                  <div className="absolute inset-0 bg-primary-container/20 rounded-xl rotate-3 scale-95 transition-transform group-hover:rotate-6"></div>
-                  <div className="absolute inset-0 bg-secondary-container/20 rounded-xl -rotate-2 scale-95 transition-transform group-hover:-rotate-4"></div>
+                  <div className="absolute inset-0 bg-primary-container/20 rounded-xl rotate-3 scale-95 group-hover:rotate-6 transition-transform" />
+                  <div className="absolute inset-0 bg-secondary-container/20 rounded-xl -rotate-2 scale-95 group-hover:-rotate-4 transition-transform" />
                   <div className="relative bg-white p-6 rounded-lg editorial-shadow border border-outline-variant/10 w-32 h-44 z-10 flex flex-col justify-between">
                     <div className="space-y-2">
-                      <div className="h-2 w-full bg-surface-container-highest rounded-full"></div>
-                      <div className="h-2 w-3/4 bg-surface-container-highest rounded-full"></div>
-                      <div className="h-2 w-5/6 bg-surface-container-highest rounded-full"></div>
+                      <div className="h-2 w-full bg-surface-container-highest rounded-full" />
+                      <div className="h-2 w-3/4 bg-surface-container-highest rounded-full" />
+                      <div className="h-2 w-5/6 bg-surface-container-highest rounded-full" />
                     </div>
-                    <div className="flex justify-center">
-                      <Sparkles className="text-primary" size={32} />
-                    </div>
+                    <div className="flex justify-center"><Sparkles className="text-primary" size={32} /></div>
                   </div>
-                  <div className="absolute top-0 right-0 transform translate-x-4 -translate-y-4 bg-primary-container p-3 rounded-full editorial-shadow">
+                  <div className="absolute top-0 right-0 translate-x-4 -translate-y-4 bg-primary-container p-3 rounded-full editorial-shadow">
                     <FileText className="text-on-primary-container" size={16} />
-                  </div>
-                  <div className="absolute bottom-4 left-0 transform -translate-x-6 bg-tertiary-container p-3 rounded-full editorial-shadow">
-                    <HelpCircle className="text-on-tertiary-container" size={16} />
                   </div>
                 </div>
                 <div className="mt-4 flex flex-col items-center gap-4">
@@ -737,70 +648,56 @@ const CurateView = () => {
                     className="bg-primary text-on-primary px-8 py-4 rounded-xl font-headline font-bold text-lg hover:bg-primary-dim transition-all editorial-shadow flex items-center gap-3"
                     onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
                   >
-                    <Upload size={24} />
-                    Upload New Textbook
+                    <Upload size={24} /> Upload Textbook PDF
                   </button>
-                  <p className="font-label text-sm text-on-surface-variant">PDF up to 50 MB — drag &amp; drop supported</p>
-                  {error && (
-                    <p className="font-label text-sm text-error font-semibold">{error}</p>
-                  )}
+                  <p className="font-label text-sm text-on-surface-variant">PDF up to 50 MB — drag & drop supported</p>
+                  {error && <p className="font-label text-sm text-error font-semibold">{error}</p>}
                 </div>
               </div>
             </div>
           </section>
-          <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
-              <Zap className="text-primary" size={32} />
-              <h4 className="font-headline text-xl font-bold">Concept Mapping</h4>
-              <p className="text-on-surface-variant leading-relaxed">AI identifies cross-chapter dependencies to build a logical learning path tailored to your curriculum.</p>
-            </div>
-            <div className="bg-surface-container-low p-8 rounded-xl space-y-4">
-              <TrendingUp className="text-secondary" size={32} />
-              <h4 className="font-headline text-xl font-bold">Image-Aware Parsing</h4>
-              <p className="text-on-surface-variant leading-relaxed">Diagrams and figures are detected and passed directly to the AI vision model for full context extraction.</p>
-            </div>
+          <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {[
+              { icon: <Zap size={28} className="text-primary" />, title: 'Rule-Based Splitting', desc: 'Chapter headings, numbered sections, and ALL-CAPS markers are detected to split the textbook.' },
+              { icon: <TrendingUp size={28} className="text-secondary" />, title: 'Workload Scoring', desc: 'Reading time, concept density, and formula density are combined into a workload score per section.' },
+              { icon: <Lightbulb size={28} className="text-tertiary" />, title: 'AI Goal Enrichment', desc: 'One AI call adds a concise learning goal to each day after the schedule is rule-generated.' },
+            ].map(card => (
+              <div key={card.title} className="bg-surface-container-low p-6 rounded-xl space-y-3">
+                {card.icon}
+                <h4 className="font-headline text-base font-bold">{card.title}</h4>
+                <p className="text-on-surface-variant text-sm leading-relaxed">{card.desc}</p>
+              </div>
+            ))}
           </section>
         </div>
         <aside className="lg:col-span-4 lg:sticky lg:top-28 h-fit">
           <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
             <div className="bg-primary px-6 py-8 text-on-primary">
-              <div className="flex justify-between items-start">
-                <div className="space-y-1">
-                  <h2 className="font-headline text-2xl font-bold tracking-tight">Your Library</h2>
-                  <p className="text-on-primary/80 font-label text-sm">No textbook loaded yet</p>
-                </div>
-                <span className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
-                  <BookOpen className="text-white" />
-                </span>
-              </div>
+              <h2 className="font-headline text-2xl font-bold tracking-tight">Your Library</h2>
+              <p className="text-on-primary/80 font-label text-sm mt-1">No textbook loaded yet</p>
             </div>
-            <div className="p-6">
-              <p className="text-on-surface-variant font-label text-sm italic">Upload a PDF to see the extracted table of contents here.</p>
+            <div className="p-6 space-y-3">
+              <p className="text-on-surface-variant font-label text-sm italic">Upload a PDF to generate and save your first plan.</p>
+              <button onClick={() => setView('library')} className="w-full text-center font-label text-sm font-bold text-primary hover:underline">
+                View Saved Plans →
+              </button>
             </div>
           </div>
         </aside>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/pdf"
-          className="hidden"
-          onChange={handleInputChange}
-        />
+        <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden" onChange={handleInputChange} />
       </div>
     );
   }
 
-  // ---- PARSING state ----
+  // ---- PARSING ----
   if (status === 'parsing') {
     return (
-      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[60vh] gap-8">
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[60vh]">
         <div className="w-full max-w-md space-y-6 text-center">
           <div className="w-16 h-16 mx-auto border-4 border-primary border-t-transparent rounded-full animate-spin" />
           <div>
             <h2 className="font-headline text-2xl font-bold text-on-surface mb-1">Parsing Textbook</h2>
-            <p className="font-label text-sm text-on-surface-variant">
-              Extracting text and detecting images from each page…
-            </p>
+            <p className="font-label text-sm text-on-surface-variant">Extracting text and detecting section boundaries…</p>
           </div>
           <div className="space-y-2">
             <ProgressBar progress={parsePercent} className="h-3" />
@@ -814,203 +711,312 @@ const CurateView = () => {
     );
   }
 
-  // ---- ANALYZING state ----
-  if (status === 'analyzing') {
-    const analyzePercent =
-      analyzeProgress.total > 0
-        ? Math.round((analyzeProgress.current / analyzeProgress.total) * 100)
-        : 0;
+  // ---- CONFIGURING ----
+  if (status === 'configuring' && parsedData) {
+    const typeCounts = parsedData.sections.reduce(
+      (acc, s) => { acc[s.sectionType] = (acc[s.sectionType] ?? 0) + 1; return acc; },
+      {} as Record<string, number>
+    );
+    const totalScore    = parsedData.sections.reduce((s, sec) => s + sec.workloadScore, 0);
+    const estMinsPerDay = numDays > 0 ? Math.round(totalScore / numDays) : 0;
+    const estHrsPerDay  = Math.round((estMinsPerDay / 45) * 10) / 10;
+    const typeColors: Record<string, string> = {
+      intro:      'bg-secondary-container text-on-secondary-container',
+      conceptual: 'bg-primary-container text-on-primary-container',
+      example:    'bg-tertiary-container text-on-tertiary-container',
+      advanced:   'bg-error/10 text-error',
+    };
     return (
-      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[60vh] gap-8">
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
+        <div className="lg:col-span-8 space-y-8">
+          <header className="space-y-1">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="text-secondary" size={28} />
+              <h1 className="font-headline text-4xl font-extrabold tracking-tight text-on-surface">Textbook Parsed</h1>
+            </div>
+            <p className="font-label text-sm text-on-surface-variant pl-1">{parsedData.fileName} — {parsedData.totalPages} pages</p>
+          </header>
+
+          {/* Section breakdown */}
+          <div className="bg-surface-container-low rounded-xl p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <h3 className="font-headline font-bold text-on-surface">Section Breakdown</h3>
+              <span className="font-label text-xs text-on-surface-variant">{parsedData.sections.length} sections detected</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {(Object.entries(typeCounts) as [string, number][]).map(([type, count]) => (
+                <div key={type} className={cn('rounded-lg p-4 text-center', typeColors[type] ?? 'bg-surface-container text-on-surface')}>
+                  <div className="font-headline text-2xl font-bold">{count}</div>
+                  <div className="font-label text-xs capitalize mt-0.5">{type}</div>
+                </div>
+              ))}
+            </div>
+            <div className="border-t border-outline-variant/10 pt-4 grid grid-cols-2 gap-4 font-label text-sm">
+              <div>
+                <span className="text-on-surface-variant">Total effort score</span>
+                <span className="block font-bold text-on-surface mt-0.5">{Math.round(totalScore)} pts</span>
+              </div>
+              <div>
+                <span className="text-on-surface-variant">Avg. section type</span>
+                <span className="block font-bold text-on-surface mt-0.5">
+                  {totalScore / parsedData.sections.length > 30 ? 'Heavy' : totalScore / parsedData.sections.length > 15 ? 'Moderate' : 'Light'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Days input */}
+          <div className="bg-surface-container-low rounded-xl p-6 space-y-5">
+            <h3 className="font-headline font-bold text-on-surface">Set Your Study Schedule</h3>
+            <div className="flex items-center gap-4">
+              <label className="font-label text-sm text-on-surface-variant w-36 shrink-0">Study days</label>
+              <input type="range" min={1} max={90} value={numDays}
+                onChange={(e) => setNumDays(Number(e.target.value))}
+                className="flex-1 accent-primary" />
+              <input type="number" min={1} max={90} value={numDays}
+                onChange={(e) => setNumDays(Math.max(1, Math.min(90, Number(e.target.value))))}
+                className="w-16 text-center bg-surface-container-lowest border border-outline-variant/20 rounded-lg px-2 py-1.5 font-headline font-bold text-on-surface text-sm" />
+            </div>
+            <div className="bg-primary/5 border border-primary/10 rounded-lg p-4 flex items-center justify-between">
+              <span className="font-label text-sm text-on-surface-variant">Estimated per day</span>
+              <span className="font-headline font-bold text-primary">~{estHrsPerDay} hrs ({estMinsPerDay} pts)</span>
+            </div>
+          </div>
+
+          <div className="flex gap-4">
+            <button onClick={handleGeneratePlan}
+              className="flex-1 bg-primary text-on-primary py-4 rounded-xl font-headline font-bold text-lg hover:bg-primary-dim transition-all editorial-shadow flex items-center justify-center gap-3">
+              <Sparkles size={22} /> Generate {numDays}-Day Study Plan
+            </button>
+            <button onClick={() => { setParsedData(null); setStatus('idle'); }}
+              className="px-6 py-4 rounded-xl font-label font-bold text-sm text-on-surface-variant border border-outline-variant/20 hover:bg-surface-container-high transition-all">
+              Upload Different
+            </button>
+          </div>
+        </div>
+
+        {/* Section list preview */}
+        <aside className="lg:col-span-4 lg:sticky lg:top-28 h-fit">
+          <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+            <div className="bg-secondary px-6 py-5 text-on-secondary">
+              <h2 className="font-headline text-lg font-bold">Detected Sections</h2>
+              <p className="text-on-secondary/80 font-label text-xs mt-0.5">{parsedData.sections.length} sections · {parsedData.totalPages} pages</p>
+            </div>
+            <div className="divide-y divide-outline-variant/10 max-h-[65vh] overflow-y-auto">
+              {parsedData.sections.map((sec, i) => (
+                <div key={i} className="px-5 py-3 flex items-start gap-3 hover:bg-surface-container-high/50 transition-all">
+                  <span className={cn('mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase shrink-0', typeColors[sec.sectionType] ?? 'bg-surface-container text-on-surface')}>
+                    {sec.sectionType[0].toUpperCase()}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="font-label text-xs font-bold text-on-surface truncate">{sec.title}</p>
+                    <p className="font-label text-[10px] text-on-surface-variant">pp. {sec.startPage}–{sec.endPage} · {sec.estimatedReadingMinutes} min read · score {sec.workloadScore}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
+      </div>
+    );
+  }
+
+  // ---- GENERATING ----
+  if (status === 'generating') {
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[60vh]">
         <div className="w-full max-w-md space-y-6 text-center">
           <Sparkles className="text-primary mx-auto animate-pulse" size={48} />
           <div>
-            <h2 className="font-headline text-2xl font-bold text-on-surface mb-1">AI Scholar is Analyzing</h2>
-            <p className="font-label text-sm text-on-surface-variant">
-              Sending chunks to GPT-OSS — building sections, key terms, and your study plan…
-            </p>
+            <h2 className="font-headline text-2xl font-bold text-on-surface mb-1">Building Your Schedule</h2>
+            <p className="font-label text-sm text-on-surface-variant">Scoring sections, balancing workload, enriching goals with AI…</p>
           </div>
-          <div className="space-y-2">
-            <ProgressBar progress={analyzePercent} className="h-3" />
-            <div className="flex justify-between font-label text-xs font-bold text-on-surface-variant uppercase tracking-widest">
-              <span>Chunk {analyzeProgress.current} of {analyzeProgress.total}</span>
-              <span>{analyzePercent}%</span>
-            </div>
+          <div className="w-full h-2 bg-surface-container-high rounded-full overflow-hidden">
+            <div className="h-full bg-primary rounded-full animate-pulse w-3/4" />
           </div>
         </div>
       </div>
     );
   }
 
-  // ---- DONE state ----
-  if (!analysis) return null;
-
-  const allStudyDays = analysis.chunkResults.flatMap((r) => r.studyPlan);
-  const todayPlan = allStudyDays.find((d) => d.day === 1) ?? allStudyDays[0] ?? null;
-  const allKeyTerms = Array.from(
-    new Set(analysis.chunkResults.flatMap((r) => r.sections.flatMap((s) => s.keyTerms)))
-  ).sort();
-
-  return (
-    <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 grid grid-cols-1 lg:grid-cols-12 gap-10">
-      {/* Left: Chapters + Sections + Glossary */}
-      <div className="lg:col-span-8 space-y-8">
-        <header className="flex items-start justify-between gap-4">
+  // ---- SAVED ----
+  if (status === 'saved' && parsedData) {
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[60vh]">
+        <div className="w-full max-w-md text-center space-y-6">
+          <div className="w-20 h-20 bg-secondary-container rounded-full flex items-center justify-center mx-auto">
+            <CheckCircle2 className="text-secondary" size={40} />
+          </div>
           <div>
-            <h1 className="font-headline text-4xl font-extrabold tracking-tight text-on-surface">{analysis.bookTitle}</h1>
-            <p className="text-on-surface-variant mt-1 font-label text-sm">
-              {analysis.chunkResults.length} chapter{analysis.chunkResults.length !== 1 ? 's' : ''} extracted
+            <h2 className="font-headline text-3xl font-bold text-on-surface">Plan Created!</h2>
+            <p className="text-on-surface-variant font-label text-sm mt-1">
+              <span className="font-bold">{parsedData.fileName.replace(/\.pdf$/i, '')}</span> — {numDays} days · {parsedData.sections.length} sections
             </p>
           </div>
-          <button
-            onClick={() => { setStatus('idle'); setAnalysis(null); }}
-            className="flex items-center gap-2 text-sm font-label font-bold text-primary hover:underline shrink-0"
-          >
-            <Upload size={16} /> Upload New
+          <div className="flex flex-col gap-3">
+            <button onClick={() => setView('library')}
+              className="w-full bg-primary text-on-primary py-4 rounded-xl font-headline font-bold text-lg hover:bg-primary-dim transition-all editorial-shadow flex items-center justify-center gap-3">
+              <BookOpen size={22} /> View in Library
+            </button>
+            <button onClick={() => { setParsedData(null); setStatus('idle'); }}
+              className="w-full py-3 rounded-xl font-label font-bold text-sm text-on-surface-variant border border-outline-variant/20 hover:bg-surface-container-high transition-all">
+              Upload Another Textbook
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+};
+
+// ---------------------------------------------------------------------------
+// PlansView — Library tab: lists + views saved study plans from localStorage
+// ---------------------------------------------------------------------------
+const DIFF_COLORS: Record<string, string> = {
+  light:    'bg-secondary-container text-on-secondary-container',
+  moderate: 'bg-tertiary-container text-on-tertiary-container',
+  heavy:    'bg-error/10 text-error',
+};
+const TYPE_COLORS: Record<string, string> = {
+  intro:      'bg-secondary-container/60 text-on-secondary-container',
+  conceptual: 'bg-primary-container/60 text-on-primary-container',
+  example:    'bg-tertiary-container/60 text-on-tertiary-container',
+  advanced:   'bg-error/10 text-error',
+};
+
+const PlansView = ({ setView }: { setView: (v: string) => void }) => {
+  const [plans, setPlans]       = useState<SavedStudyPlan[]>(() => loadAllPlans());
+  const [selected, setSelected] = useState<SavedStudyPlan | null>(null);
+
+  const handleDelete = (id: string) => {
+    deletePlan(id);
+    setPlans(loadAllPlans());
+    if (selected?.id === id) setSelected(null);
+  };
+
+  // ---- Plan detail ----
+  if (selected) {
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
+        <div className="flex items-center gap-4">
+          <button onClick={() => setSelected(null)}
+            className="flex items-center gap-2 font-label text-sm font-bold text-primary hover:underline">
+            <ArrowLeft size={16} /> All Plans
           </button>
-        </header>
+          <h1 className="font-headline text-3xl font-extrabold text-on-surface">{selected.bookTitle}</h1>
+          <span className="ml-auto font-label text-xs text-on-surface-variant">
+            {selected.numDays} days · {selected.totalSections} sections · {new Date(selected.createdAt).toLocaleDateString()}
+          </span>
+        </div>
 
         <div className="space-y-4">
-          {analysis.chunkResults.map((chunk, idx) => (
-            <div key={idx} className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
-              <button
-                className="w-full flex items-center justify-between px-6 py-5 text-left hover:bg-surface-container-high transition-all"
-                onClick={() => setExpandedChapter(expandedChapter === idx ? null : idx)}
-              >
-                <div className="flex items-center gap-4">
-                  <span className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center font-headline text-sm font-bold text-on-primary-container shrink-0">
-                    {idx + 1}
-                  </span>
-                  <span className="font-headline font-bold text-on-surface">{chunk.chapterTitle}</span>
+          {selected.days.map((day) => (
+            <div key={day.day} className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+              {/* Day header */}
+              <div className="px-6 py-4 flex items-center gap-4 border-b border-outline-variant/10">
+                <span className="w-10 h-10 rounded-xl bg-primary-container flex items-center justify-center font-headline text-sm font-bold text-on-primary-container shrink-0">
+                  {day.day}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="font-headline font-bold text-on-surface truncate">{day.mainConceptFocus}</p>
+                  <p className="font-label text-xs text-on-surface-variant">{day.sections.length} section{day.sections.length !== 1 ? 's' : ''} · ~{day.estimatedHours} hrs</p>
                 </div>
-                {expandedChapter === idx ? <ChevronLeft size={20} className="text-on-surface-variant rotate-90" /> : <ChevronRight size={20} className="text-on-surface-variant -rotate-90" />}
-              </button>
-
-              <AnimatePresence>
-                {expandedChapter === idx && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className="overflow-hidden"
-                  >
-                    <div className="px-6 pb-6 space-y-4 border-t border-outline-variant/10">
-                      {chunk.sections.length === 0 && (
-                        <p className="text-on-surface-variant font-label text-sm italic pt-4">No sections extracted for this chunk.</p>
-                      )}
-                      {chunk.sections.map((sec, sIdx) => (
-                        <div key={sIdx} className="pt-4 space-y-2">
-                          <div className="flex items-center gap-2">
-                            <BookOpen size={16} className="text-primary shrink-0" />
-                            <h4 className="font-headline font-bold text-on-surface text-sm">{sec.title}</h4>
-                            <span className="ml-auto font-label text-xs text-on-surface-variant shrink-0 flex items-center gap-1">
-                              <Clock size={12} /> {sec.estimatedMinutes} min
-                            </span>
-                          </div>
-                          <p className="font-body text-sm text-on-surface-variant leading-relaxed pl-6">{sec.summary}</p>
-                          {sec.keyTerms && sec.keyTerms.length > 0 && (
-                            <div className="flex flex-wrap gap-2 pl-6">
-                              {sec.keyTerms.map((term, tIdx) => (
-                                <span key={tIdx} className="bg-primary-container/30 text-on-primary-container px-2 py-0.5 rounded-full font-label text-xs font-medium">
-                                  {term}
-                                </span>
-                              ))}
-                            </div>
-                          )}
+                <span className={cn('px-2 py-0.5 rounded-full font-label text-xs font-bold capitalize', DIFF_COLORS[day.difficulty] ?? '')}>
+                  {day.difficulty}
+                </span>
+              </div>
+              {/* Sections */}
+              {day.sections.length === 0
+                ? <p className="px-6 py-4 font-label text-sm italic text-on-surface-variant">Review day — revisit previous material.</p>
+                : (
+                  <div className="divide-y divide-outline-variant/5">
+                    {day.sections.map((sec, i) => (
+                      <div key={i} className="px-6 py-3 flex items-start gap-3">
+                        <span className={cn('mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase shrink-0', TYPE_COLORS[sec.sectionType] ?? '')}>
+                          {sec.sectionType[0].toUpperCase()}
+                        </span>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-label text-sm font-bold text-on-surface">{sec.title}</p>
+                          <p className="font-label text-xs text-on-surface-variant">pp. {sec.startPage}–{sec.endPage} · {sec.estimatedReadingMinutes} min read · score {sec.workloadScore}</p>
                         </div>
-                      ))}
-                    </div>
-                  </motion.div>
+                        <span className={cn('shrink-0 px-2 py-0.5 rounded font-label text-[10px] font-bold', DIFF_COLORS[day.difficulty] ?? '')}>
+                          {sec.workloadScore} pts
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 )}
-              </AnimatePresence>
             </div>
           ))}
         </div>
+      </div>
+    );
+  }
 
-        {/* Glossary */}
-        {allKeyTerms.length > 0 && (
-          <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
-            <div className="px-6 py-5 border-b border-outline-variant/10 flex items-center gap-3">
-              <Bookmark className="text-secondary" size={20} />
-              <h2 className="font-headline text-xl font-bold text-on-surface">Glossary</h2>
-              <span className="ml-auto font-label text-xs text-on-surface-variant">{allKeyTerms.length} terms</span>
-            </div>
-            <div className="p-6 flex flex-wrap gap-2">
-              {allKeyTerms.map((term, i) => (
-                <span key={i} className="bg-secondary-container/40 text-on-secondary-container px-3 py-1 rounded-full font-label text-sm font-medium border border-secondary/10">
-                  {term}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+  // ---- Plan list ----
+  return (
+    <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
+      <div className="flex items-end justify-between">
+        <div>
+          <h1 className="font-headline text-4xl font-extrabold tracking-tight text-on-surface">Your Library</h1>
+          <p className="text-on-surface-variant font-label text-sm mt-1">{plans.length} saved plan{plans.length !== 1 ? 's' : ''}</p>
+        </div>
+        <button onClick={() => setView('curate')}
+          className="flex items-center gap-2 bg-primary text-on-primary px-5 py-3 rounded-xl font-headline font-bold text-sm hover:bg-primary-dim transition-all editorial-shadow">
+          <Plus size={18} /> New Plan
+        </button>
       </div>
 
-      {/* Right: Today's Plan + Full Study Plan */}
-      <aside className="lg:col-span-4 lg:sticky lg:top-28 h-fit space-y-6">
-
-        {/* Today's Study Plan */}
-        {todayPlan && (
-          <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
-            <div className="bg-secondary px-6 py-5 text-on-secondary flex items-center justify-between">
-              <div className="space-y-0.5">
-                <p className="font-label text-xs uppercase tracking-widest font-bold opacity-80">Today</p>
-                <h2 className="font-headline text-lg font-bold tracking-tight">Day {todayPlan.day}: {todayPlan.topic}</h2>
-              </div>
-              <span className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
-                <Flame className="text-white" size={18} />
-              </span>
-            </div>
-            <div className="p-4 space-y-2">
-              {todayPlan.activities.map((act: string, i: number) => (
-                <div key={i} className="flex items-start gap-3 p-3 bg-surface-container-lowest rounded-lg border border-outline-variant/10">
-                  <CheckCircle2 size={16} className="text-secondary mt-0.5 shrink-0" />
-                  <span className="font-label text-sm text-on-surface">{act}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Full Study Plan */}
-        <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
-          <div className="bg-primary px-6 py-6 text-on-primary">
-            <div className="flex justify-between items-start">
-              <div className="space-y-1">
-                <h2 className="font-headline text-xl font-bold tracking-tight">Full Study Plan</h2>
-                <p className="text-on-primary/80 font-label text-sm">{allStudyDays.length} sessions total</p>
-              </div>
-              <span className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
-                <Lightbulb className="text-white" />
-              </span>
-            </div>
-          </div>
-          <div className="p-4 space-y-3 max-h-[50vh] overflow-y-auto">
-            {allStudyDays.length === 0 && (
-              <p className="text-on-surface-variant font-label text-sm italic p-2">No study plan generated.</p>
-            )}
-            {allStudyDays.map((day, i) => (
-              <div key={i} className="bg-surface-container-lowest rounded-lg p-4 space-y-2 border border-outline-variant/10">
-                <div className="flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-full bg-secondary-container flex items-center justify-center font-label text-xs font-bold text-on-secondary-container shrink-0">
-                    {day.day}
-                  </span>
-                  <span className="font-headline text-sm font-bold text-on-surface">{day.topic}</span>
-                </div>
-                <ul className="space-y-1 pl-8">
-                  {day.activities.map((act, aIdx) => (
-                    <li key={aIdx} className="flex items-start gap-2 font-label text-xs text-on-surface-variant">
-                      <ArrowRight size={10} className="mt-0.5 shrink-0 text-primary" />
-                      {act}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
+      {plans.length === 0 ? (
+        <div className="flex flex-col items-center justify-center min-h-[40vh] gap-4 text-center">
+          <BookOpen className="text-outline-variant" size={48} />
+          <p className="font-headline text-xl font-bold text-on-surface">No plans yet</p>
+          <p className="text-on-surface-variant font-label text-sm">Upload a textbook to generate your first study plan.</p>
+          <button onClick={() => setView('curate')}
+            className="mt-2 bg-primary text-on-primary px-6 py-3 rounded-xl font-headline font-bold text-sm hover:bg-primary-dim transition-all">
+            Upload Textbook
+          </button>
         </div>
-      </aside>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {plans.map((plan) => (
+            <div key={plan.id}
+              className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow hover:shadow-lg transition-all cursor-pointer group"
+              onClick={() => setSelected(plan)}>
+              <div className="bg-primary px-6 py-5 text-on-primary">
+                <h3 className="font-headline text-lg font-bold truncate">{plan.bookTitle}</h3>
+                <p className="text-on-primary/70 font-label text-xs mt-0.5">{new Date(plan.createdAt).toLocaleDateString()}</p>
+              </div>
+              <div className="p-5 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-surface-container-lowest rounded-lg p-3 text-center">
+                    <div className="font-headline text-2xl font-bold text-on-surface">{plan.numDays}</div>
+                    <div className="font-label text-xs text-on-surface-variant">days</div>
+                  </div>
+                  <div className="bg-surface-container-lowest rounded-lg p-3 text-center">
+                    <div className="font-headline text-2xl font-bold text-on-surface">{plan.totalSections}</div>
+                    <div className="font-label text-xs text-on-surface-variant">sections</div>
+                  </div>
+                </div>
+                <p className="font-label text-xs text-on-surface-variant italic truncate">Day 1: {plan.days[0]?.mainConceptFocus ?? '—'}</p>
+                <div className="flex items-center justify-between">
+                  <button onClick={() => setSelected(plan)}
+                    className="font-label text-xs font-bold text-primary group-hover:underline flex items-center gap-1">
+                    View Plan <ArrowRight size={12} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(plan.id); }}
+                    className="font-label text-xs text-on-surface-variant hover:text-error transition-colors">
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
@@ -1425,11 +1431,11 @@ export default function App() {
               transition={{ duration: 0.3 }}
             >
               {view === 'dashboard' && <DashboardView setView={setView} />}
-              {view === 'curate' && <CurateView />}
+              {view === 'curate' && <CurateView setView={setView} />}
+              {view === 'library' && <PlansView setView={setView} />}
               {view === 'study' && <StudyView />}
               {view === 'practice' && <PracticeView />}
               {view === 'timeline' && <NightlyReviewView />}
-              {view === 'library' && <LibraryView items={libraryItems} />}
             </motion.div>
           </AnimatePresence>
         </main>
