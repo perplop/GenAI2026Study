@@ -774,11 +774,11 @@ const CurateView = ({ setView }: { setView: (v: string) => void }) => {
             </div>
             <div className="border-t border-outline-variant/10 pt-4 grid grid-cols-2 gap-4 font-label text-sm">
               <div>
-                <span className="text-on-surface-variant">Total effort score</span>
-                <span className="block font-bold text-on-surface mt-0.5">{Math.round(totalScore)} pts</span>
+                <span className="text-on-surface-variant">Est. total reading</span>
+                <span className="block font-bold text-on-surface mt-0.5">{Math.round(totalScore / 45 * 10) / 10} hrs</span>
               </div>
               <div>
-                <span className="text-on-surface-variant">Avg. section type</span>
+                <span className="text-on-surface-variant">Overall difficulty</span>
                 <span className="block font-bold text-on-surface mt-0.5">
                   {totalScore / parsedData.sections.length > 30 ? 'Heavy' : totalScore / parsedData.sections.length > 15 ? 'Moderate' : 'Light'}
                 </span>
@@ -800,7 +800,7 @@ const CurateView = ({ setView }: { setView: (v: string) => void }) => {
             </div>
             <div className="bg-primary/5 border border-primary/10 rounded-lg p-4 flex items-center justify-between">
               <span className="font-label text-sm text-on-surface-variant">Estimated per day</span>
-              <span className="font-headline font-bold text-primary">~{estHrsPerDay} hrs ({estMinsPerDay} pts)</span>
+              <span className="font-headline font-bold text-primary">~{estHrsPerDay} hrs / day</span>
             </div>
           </div>
 
@@ -831,7 +831,7 @@ const CurateView = ({ setView }: { setView: (v: string) => void }) => {
                   </span>
                   <div className="min-w-0">
                     <p className="font-label text-xs font-bold text-on-surface truncate">{sec.title}</p>
-                    <p className="font-label text-[10px] text-on-surface-variant">pp. {sec.startPage}–{sec.endPage} · {sec.estimatedReadingMinutes} min read · score {sec.workloadScore}</p>
+                    <p className="font-label text-[10px] text-on-surface-variant">pp. {sec.startPage}–{sec.endPage} · {sec.estimatedReadingMinutes} min read</p>
                   </div>
                 </div>
               ))}
@@ -1003,11 +1003,8 @@ const PlansView = ({
                         </span>
                         <div className="flex-1 min-w-0">
                           <p className="font-label text-sm font-bold text-on-surface">{sec.title}</p>
-                          <p className="font-label text-xs text-on-surface-variant">pp. {sec.startPage}–{sec.endPage} · {sec.estimatedReadingMinutes} min read · score {sec.workloadScore}</p>
+                          <p className="font-label text-xs text-on-surface-variant">pp. {sec.startPage}–{sec.endPage} · {sec.estimatedReadingMinutes} min read</p>
                         </div>
-                        <span className={cn('shrink-0 px-2 py-0.5 rounded font-label text-[10px] font-bold', DIFF_COLORS[day.difficulty] ?? '')}>
-                          {sec.workloadScore} pts
-                        </span>
                       </div>
                     ))}
                   </div>
