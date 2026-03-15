@@ -3,6 +3,7 @@
  * All functions call the OpenAI-compatible proxy and cache results in localStorage.
  */
 import OpenAI from 'openai';
+import { userKey } from './userContext';
 
 const BASE_URL = 'https://vjioo4r1vyvcozuj.us-east-2.aws.endpoints.huggingface.cloud/v1';
 const MODEL = 'openai/gpt-oss-120b';
@@ -18,7 +19,7 @@ function getClient(): OpenAI {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function cacheKey(prefix: string, id: string): string {
-  return `genai-${prefix}-${id}`;
+  return userKey(`ai-${prefix}-${id}`);
 }
 
 function getCache<T>(key: string): T | null {

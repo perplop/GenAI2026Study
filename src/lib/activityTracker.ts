@@ -1,6 +1,6 @@
 /** Lightweight localStorage-based activity tracker. */
+import { userKey } from './userContext';
 
-const ACTIVITY_KEY = 'genai-activities';
 const MAX_ACTIVITIES = 50;
 
 export interface TrackedActivity {
@@ -27,7 +27,7 @@ export function logActivity(
   all.unshift(activity);
   if (all.length > MAX_ACTIVITIES) all.length = MAX_ACTIVITIES;
   try {
-    localStorage.setItem(ACTIVITY_KEY, JSON.stringify(all));
+    localStorage.setItem(userKey('activities'),JSON.stringify(all));
   } catch (e) {
     console.error('logActivity:', e);
   }
@@ -36,7 +36,7 @@ export function logActivity(
 
 export function loadActivities(): TrackedActivity[] {
   try {
-    const raw = localStorage.getItem(ACTIVITY_KEY);
+    const raw = localStorage.getItem(userKey('activities'));
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -59,7 +59,6 @@ export function relativeTime(iso: string): string {
 
 // ── Streak tracking ────────────────────────────────────────────────────────
 
-const STREAK_KEY = 'genai-practice-streak';
 
 interface StreakData {
   currentStreak: number;
@@ -78,7 +77,7 @@ function yesterdayStr(): string {
 
 export function getStreak(): number {
   try {
-    const raw = localStorage.getItem(STREAK_KEY);
+    const raw = localStorage.getItem(userKey('practice-streak'));
     if (!raw) return 0;
     const data: StreakData = JSON.parse(raw);
     if (data.lastPracticeDate === todayStr() || data.lastPracticeDate === yesterdayStr()) {
@@ -93,7 +92,7 @@ export function getStreak(): number {
 export function recordPracticeDay(): number {
   const today = todayStr();
   try {
-    const raw = localStorage.getItem(STREAK_KEY);
+    const raw = localStorage.getItem(userKey('practice-streak'));
     let data: StreakData = raw ? JSON.parse(raw) : { currentStreak: 0, lastPracticeDate: '' };
     if (data.lastPracticeDate === today) return data.currentStreak; // already recorded today
     if (data.lastPracticeDate === yesterdayStr()) {
@@ -102,7 +101,7 @@ export function recordPracticeDay(): number {
       data.currentStreak = 1;
     }
     data.lastPracticeDate = today;
-    localStorage.setItem(STREAK_KEY, JSON.stringify(data));
+    localStorage.setItem(userKey('practice-streak'),JSON.stringify(data));
     return data.currentStreak;
   } catch {
     return 1;
@@ -111,7 +110,6 @@ export function recordPracticeDay(): number {
 
 // ── Quiz score tracking ────────────────────────────────────────────────────
 
-const QUIZ_KEY = 'genai-quiz-scores';
 
 export interface QuizScore {
   planId: string;
@@ -123,11 +121,11 @@ export interface QuizScore {
 
 export function saveQuizScore(score: QuizScore): void {
   try {
-    const raw = localStorage.getItem(QUIZ_KEY);
+    const raw = localStorage.getItem(userKey('quiz-scores'));
     const list: QuizScore[] = raw ? JSON.parse(raw) : [];
     list.unshift(score);
     if (list.length > 100) list.length = 100;
-    localStorage.setItem(QUIZ_KEY, JSON.stringify(list));
+    localStorage.setItem(userKey('quiz-scores'),JSON.stringify(list));
   } catch (e) {
     console.error('saveQuizScore:', e);
   }
@@ -135,7 +133,7 @@ export function saveQuizScore(score: QuizScore): void {
 
 export function loadQuizScores(): QuizScore[] {
   try {
-    const raw = localStorage.getItem(QUIZ_KEY);
+    const raw = localStorage.getItem(userKey('quiz-scores'));
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -144,7 +142,6 @@ export function loadQuizScores(): QuizScore[] {
 
 // ── Daily study goal ───────────────────────────────────────────────────────
 
-const GOAL_KEY = 'genai-daily-goal';
 
 interface DailyGoalData {
   targetHours: number;
@@ -154,7 +151,7 @@ interface DailyGoalData {
 
 export function getDailyGoal(): DailyGoalData {
   try {
-    const raw = localStorage.getItem(GOAL_KEY);
+    const raw = localStorage.getItem(userKey('daily-goal'));
     if (raw) {
       const data: DailyGoalData = JSON.parse(raw);
       if (data.date === todayStr()) return data;
@@ -167,12 +164,12 @@ export function setDailyGoalTarget(hours: number): void {
   const data = getDailyGoal();
   data.targetHours = hours;
   data.date = todayStr();
-  localStorage.setItem(GOAL_KEY, JSON.stringify(data));
+  localStorage.setItem(userKey('daily-goal'),JSON.stringify(data));
 }
 
 export function addStudiedMinutes(mins: number): void {
   const data = getDailyGoal();
   data.studiedMinutes += mins;
   data.date = todayStr();
-  localStorage.setItem(GOAL_KEY, JSON.stringify(data));
+  localStorage.setItem(userKey('daily-goal'),JSON.stringify(data));
 }

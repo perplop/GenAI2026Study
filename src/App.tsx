@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import AuthPage from './AuthPage';
+import type { AuthUser } from './LoginForm';
 import { 
   LayoutDashboard, 
   BookOpen, 
@@ -50,6 +52,7 @@ import {
   generateScholarTip, generateScholarSummary,
   type GeneratedQuiz, type GeneratedFlashcard, type ReviewSummary,
 } from './lib/aiGenerator';
+import { setCurrentUserId } from './lib/userContext';
 
 // --- Mock Data ---
 
@@ -337,12 +340,14 @@ const TopNav = ({
   onNotificationClick,
   onSettingsClick,
   hasNotifications,
+  userEmail,
 }: {
   onMenuClick: () => void;
   setView: (v: string) => void;
   onNotificationClick: () => void;
   onSettingsClick: () => void;
   hasNotifications: boolean;
+  userEmail?: string;
 }) => (
   <nav className="sticky top-0 z-50 glass-panel border-b border-outline-variant/10 px-6 py-4 flex items-center justify-between h-16">
     <div className="flex items-center gap-4 lg:gap-12">
@@ -371,11 +376,9 @@ const TopNav = ({
         >
           <Settings size={24} />
         </button>
-        <img 
-          alt="User Profile" 
-          className="w-10 h-10 rounded-full border-2 border-surface-container-highest object-cover" 
-          src="https://picsum.photos/seed/student/100/100" 
-        />
+        <div className="w-10 h-10 rounded-full border-2 border-surface-container-highest bg-primary flex items-center justify-center text-on-primary font-headline font-bold text-sm">
+          {userEmail ? userEmail[0].toUpperCase() : '?'}
+        </div>
       </div>
     </div>
   </nav>
@@ -2102,6 +2105,56 @@ const NightlyReviewView = ({ setView, aiEnabled }: { setView: (v: string) => voi
 // --- Main App ---
 
 export default function App() {
+  // Auth state
+  const [authedUser, setAuthedUser] = useState<AuthUser | null>(() => {
+    try {
+      const raw = localStorage.getItem('genai-user');
+      const user = raw ? JSON.parse(raw) : null;
+      if (user?.id) setCurrentUserId(user.id);
+      return user;
+    } catch { return null; }
+  });
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  // Check existing session on mount (with timeout so we don't hang if auth server is down)
+  useEffect(() => {
+    const token = localStorage.getItem('auth_token');
+    if (token || authedUser) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      fetch('http://localhost:4000/api/me', { credentials: 'include', signal: controller.signal })
+        .then(r => r.json())
+        .then(data => {
+          if (data.loggedIn && data.user) {
+            setAuthedUser(data.user);
+            localStorage.setItem('genai-user', JSON.stringify(data.user));
+          }
+        })
+        .catch(() => { /* auth server not running — keep local user */ })
+        .finally(() => { clearTimeout(timeout); setCheckingSession(false); });
+    } else {
+      setCheckingSession(false);
+    }
+  }, []);
+
+  // Keep userContext in sync with auth state
+  useEffect(() => {
+    setCurrentUserId(authedUser?.id ?? '_guest');
+  }, [authedUser]);
+
+  const handleAuthSuccess = useCallback((user: AuthUser) => {
+    setCurrentUserId(user.id);
+    setAuthedUser(user);
+    localStorage.setItem('genai-user', JSON.stringify(user));
+  }, []);
+
+  const handleSkipAuth = useCallback(() => {
+    const guestUser: AuthUser = { id: 'guest', email: 'guest@local' };
+    setCurrentUserId(guestUser.id);
+    setAuthedUser(guestUser);
+    localStorage.setItem('genai-user', JSON.stringify(guestUser));
+  }, []);
+
   const [view, setView] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
@@ -2138,7 +2191,8 @@ export default function App() {
 
   const handleSignOut = () => {
     localStorage.removeItem('auth_token');
-    // Clear session cookie if auth server is running
+    localStorage.removeItem('genai-user');
+    setAuthedUser(null);
     fetch('http://localhost:4000/api/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
   };
 
@@ -2158,6 +2212,32 @@ export default function App() {
     fetchLibrary();
   }, []);
 
+  // Auth gate — rendered conditionally instead of early returns (hooks must be unconditional)
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen bg-surface flex items-center justify-center">
+        <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!authedUser) {
+    return (
+      <div className="min-h-screen bg-surface flex flex-col items-center justify-center px-4">
+        <AuthPage onAuthSuccess={handleAuthSuccess} />
+        <div className="text-center mt-6 mb-8">
+          <button
+            onClick={handleSkipAuth}
+            className="text-sm text-on-surface-variant hover:text-primary transition-colors underline"
+          >
+            Continue without an account (local only)
+          </button>
+          <p className="text-xs text-on-surface-variant/60 mt-2">Your study plans will be saved locally in your browser.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-surface flex flex-col">
       <TopNav
@@ -2166,6 +2246,7 @@ export default function App() {
         onNotificationClick={() => setShowNotifications(!showNotifications)}
         onSettingsClick={() => setShowSettings(!showSettings)}
         hasNotifications={activities.length > 0}
+        userEmail={authedUser?.email}
       />
       <NotificationPanel isOpen={showNotifications} onClose={() => setShowNotifications(false)} activities={activities} />
       <SettingsPanel
