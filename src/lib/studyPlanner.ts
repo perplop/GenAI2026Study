@@ -25,46 +25,77 @@ export function setStudyProgress(progress: StudyProgress): void {
   }
 }
 
-/** Distribute sections across numDays by balancing total workload score (greedy). */
+/**
+ * Proportional Cumulative Scheduling — preserves textbook reading order.
+ *
+ * Algorithm:
+ *   1. Compute total workload W = sum of all section workloadScores.
+ *   2. Walk sections in page order (left to right).
+ *   3. For day D, the cumulative workload target at the end of day D is (D/N)×W.
+ *   4. Flush the current bucket into a new day once cumulative workload
+ *      reaches that day's target (or when the last section is reached).
+ *   5. Pad remaining days as review days if content runs out early.
+ *
+ * Why this instead of greedy bin-packing:
+ *   The greedy approach (assign each section to the least-loaded day) maximises
+ *   workload balance but scatters sections from different chapters into the same
+ *   day, forcing the student to context-switch constantly. Proportional cumulative
+ *   keeps every day's sections contiguous in the book, so each day reads like a
+ *   natural continuation of the previous one.
+ */
 export function scheduleDays(sections: AnalyzedSection[], numDays: number): PlanDay[] {
-  if (numDays < 1 || sections.length === 0) {
-    return [];
-  }
+  if (sections.length === 0 || numDays <= 0) return [];
+
   const totalScore = sections.reduce((s, sec) => s + sec.workloadScore, 0);
-  const targetPerDay = totalScore / numDays;
-  const days: PlanDay[] = Array.from({ length: numDays }, (_, i) => ({
-    day: i + 1,
-    sections: [],
-    totalWorkloadScore: 0,
-    estimatedHours: 0,
-    mainConceptFocus: `Day ${i + 1}`,
-    difficulty: 'moderate' as const,
-  }));
+  const days: PlanDay[] = [];
+  let bucket: AnalyzedSection[] = [];
+  let cumulative = 0;
+  let dayNum = 1;
 
-  for (const sec of sections) {
-    let bestIdx = 0;
-    let bestTotal = days[0].totalWorkloadScore;
-    for (let d = 1; d < days.length; d++) {
-      if (days[d].totalWorkloadScore < bestTotal) {
-        bestTotal = days[d].totalWorkloadScore;
-        bestIdx = d;
-      }
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i];
+    bucket.push(sec);
+    cumulative += sec.workloadScore;
+
+    const isLast          = i === sections.length - 1;
+    const targetForThisDay = (dayNum / numDays) * totalScore;
+
+    if (isLast || (cumulative >= targetForThisDay && dayNum < numDays)) {
+      days.push(buildDay(dayNum, bucket));
+      dayNum++;
+      bucket = [];
     }
-    days[bestIdx].sections.push(sec);
-    days[bestIdx].totalWorkloadScore += sec.workloadScore;
   }
 
-  for (const d of days) {
-    d.estimatedHours = Math.round((d.totalWorkloadScore / 45) * 10) / 10;
-    const avg = d.sections.length ? d.totalWorkloadScore / d.sections.length : 0;
-    d.difficulty = avg > 30 ? 'heavy' : avg > 15 ? 'moderate' : 'light';
-    d.mainConceptFocus =
-      d.sections.length > 0
-        ? d.sections.map((s) => s.title).slice(0, 2).join(', ')
-        : 'Review';
+  // Pad with review days if there was less content than requested days
+  while (days.length < numDays) {
+    days.push({
+      day:                days.length + 1,
+      sections:           [],
+      totalWorkloadScore: 0,
+      estimatedHours:     0,
+      mainConceptFocus:   'Review & consolidate previous material',
+      difficulty:         'light',
+    });
   }
 
   return days;
+}
+
+function buildDay(dayNum: number, sections: AnalyzedSection[]): PlanDay {
+  const totalScore = sections.reduce((s, sec) => s + sec.workloadScore, 0);
+  // Convert effort-minutes → wall-clock hours (÷45 accounts for re-reading and pauses)
+  const estimatedHours = Math.round((totalScore / 45) * 10) / 10;
+  const avgScore = totalScore / Math.max(sections.length, 1);
+  const difficulty: PlanDay['difficulty'] =
+    avgScore > 40 ? 'heavy' : avgScore > 20 ? 'moderate' : 'light';
+  // Main concept = title of the highest-workload section in the day
+  const topSection = sections.reduce(
+    (best, s) => (s.workloadScore > (best?.workloadScore ?? 0) ? s : best),
+    sections[0],
+  );
+  const mainConceptFocus = topSection?.title ?? 'Review';
+  return { day: dayNum, sections, totalWorkloadScore: Math.round(totalScore), estimatedHours, mainConceptFocus, difficulty };
 }
 
 export function savePlan(plan: SavedStudyPlan): void {
