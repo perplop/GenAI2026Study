@@ -4,8 +4,7 @@ import {
   BookOpen, 
   Zap, 
   Library, 
-  Search, 
-  Bell, 
+  Bell,
   Settings, 
   Plus,
   ChevronLeft,
@@ -303,14 +302,6 @@ const TopNav = ({
       >
         StudySmart
       </button>
-      <div className="hidden md:flex items-center bg-surface-container-low px-4 py-2 rounded-full w-72 group focus-within:ring-2 ring-primary/20 transition-all">
-        <Search size={18} className="text-on-surface-variant" />
-        <input 
-          className="bg-transparent border-none focus:ring-0 text-sm font-label ml-2 w-full placeholder:text-on-surface-variant/60" 
-          placeholder="Search resources..." 
-          type="text" 
-        />
-      </div>
     </div>
     <div className="flex items-center gap-6">
       <div className="flex items-center gap-4">
