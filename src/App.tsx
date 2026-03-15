@@ -35,45 +35,12 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import OpenAI from "openai";
 import { cn } from './lib/utils';
-import { Course, Activity, Module, QuizQuestion, LibraryItem, AnalyzedSection, PlanDay, SavedStudyPlan } from './types';
+import { Activity, Module, QuizQuestion, LibraryItem, AnalyzedSection, PlanDay, SavedStudyPlan } from './types';
 import { parseTextbook, ParsedPage } from './lib/pdfParser';
 import { splitIntoSections } from './lib/sectionSplitter';
 import { scheduleDays, savePlan, loadAllPlans, deletePlan } from './lib/studyPlanner';
 
 // --- Mock Data ---
-
-const COURSES: Course[] = [
-  {
-    id: '1',
-    title: 'Biology 101',
-    chapter: 'Chapter 4: Cell Structure',
-    progress: 45,
-    totalModules: 28,
-    completedModules: 12,
-    color: 'bg-primary',
-    icon: 'biotech'
-  },
-  {
-    id: '2',
-    title: 'Calculus II',
-    chapter: 'Integration Techniques',
-    progress: 18,
-    totalModules: 22,
-    completedModules: 4,
-    color: 'bg-secondary',
-    icon: 'functions'
-  },
-  {
-    id: '3',
-    title: 'World History',
-    chapter: 'The Renaissance Era',
-    progress: 72,
-    totalModules: 29,
-    completedModules: 21,
-    color: 'bg-tertiary',
-    icon: 'history'
-  }
-];
 
 const ACTIVITIES: Activity[] = [
   {
@@ -372,11 +339,27 @@ const TopNav = ({
 
 // --- Views ---
 
-const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
+const PLAN_CARD_COLORS = ['bg-primary', 'bg-secondary', 'bg-tertiary'] as const;
+
+const DashboardView = ({
+  setView,
+  view,
+  onOpenPlan,
+}: {
+  setView: (v: string) => void;
+  view: string;
+  onOpenPlan: (planId: string) => void;
+}) => {
+  const [plans, setPlans] = useState<SavedStudyPlan[]>(() => loadAllPlans());
+  useEffect(() => {
+    if (view === 'dashboard') setPlans(loadAllPlans());
+  }, [view]);
+
+  return (
   <div className="max-w-[1440px] mx-auto px-6 py-10 lg:px-16">
     <section className="grid grid-cols-1 lg:grid-cols-12 gap-10 mb-20 items-end">
       <div className="lg:col-span-7">
-        <p className="font-label text-primary font-bold tracking-widest uppercase text-xs mb-4">Welcome back, Alex</p>
+        <p className="font-label text-primary font-bold tracking-widest uppercase text-xs mb-4">Welcome back</p>
         <h1 className="font-headline text-5xl lg:text-7xl font-extrabold text-on-surface leading-tight mb-6">
           Master the <span className="italic font-body font-light text-primary">Art</span> of Learning.
         </h1>
@@ -396,38 +379,57 @@ const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
     <section className="mb-16">
       <div className="flex items-center justify-between mb-8">
         <h2 className="font-headline text-2xl font-bold">Active Courses</h2>
-        <div className="flex gap-2">
-          <button className="p-2 border border-outline-variant/20 rounded-full hover:bg-surface-container-high transition-colors">
-            <ChevronLeft size={20} />
-          </button>
-          <button className="p-2 border border-outline-variant/20 rounded-full hover:bg-surface-container-high transition-colors text-primary">
-            <ChevronRight size={20} />
-          </button>
-        </div>
+        <button
+          onClick={() => setView('library')}
+          className="font-label text-sm font-semibold text-primary hover:underline"
+        >
+          View all in Library
+        </button>
       </div>
       <div className="flex overflow-x-auto gap-6 no-scrollbar pb-6 -mx-4 px-4">
-        {COURSES.map((course) => (
-          <div 
-            key={course.id}
-            className="min-w-[320px] bg-surface-container-lowest p-6 rounded-xl border border-transparent hover:border-primary/10 transition-all cursor-pointer group shadow-sm"
+        {plans.map((plan, idx) => (
+          <button
+            key={plan.id}
+            type="button"
+            onClick={() => {
+              onOpenPlan(plan.id);
+              setView('library');
+            }}
+            className="min-w-[320px] text-left bg-surface-container-lowest p-6 rounded-xl border border-transparent hover:border-primary/10 transition-all cursor-pointer group shadow-sm"
           >
-            <div className={cn("w-12 h-12 rounded-lg flex items-center justify-center mb-6 group-hover:scale-110 transition-transform bg-opacity-20", course.color.replace('bg-', 'bg-opacity-20 '))}>
-              {course.icon === 'biotech' && <Microscope className="text-primary" />}
-              {course.icon === 'functions' && <Variable className="text-secondary" />}
-              {course.icon === 'history' && <History className="text-tertiary" />}
+            <div className={cn(
+              "w-12 h-12 rounded-lg flex items-center justify-center mb-6 group-hover:scale-110 transition-transform bg-opacity-20",
+              PLAN_CARD_COLORS[idx % 3]
+            )}>
+              <BookOpen size={24} className={cn(
+                idx % 3 === 0 && "text-primary",
+                idx % 3 === 1 && "text-secondary",
+                idx % 3 === 2 && "text-tertiary"
+              )} />
             </div>
-            <h3 className="font-headline text-xl font-bold mb-1">{course.title}</h3>
-            <p className="text-on-surface-variant font-label text-sm mb-6">{course.chapter}</p>
+            <h3 className="font-headline text-xl font-bold mb-1 truncate">{plan.bookTitle}</h3>
+            <p className="text-on-surface-variant font-label text-sm mb-6">
+              {plan.numDays} days · {plan.totalSections} sections
+            </p>
             <div className="space-y-2">
-              <div className="flex justify-between items-center text-xs font-label">
-                <span className="text-on-surface-variant font-medium">Progress</span>
-                <span className="text-primary font-bold">{course.progress}%</span>
-              </div>
-              <ProgressBar progress={course.progress} />
-              <p className="text-[10px] text-on-surface-variant mt-1">{course.completedModules} of {course.totalModules} modules finished</p>
+              <p className="text-[10px] text-on-surface-variant font-label">
+                Created {new Date(plan.createdAt).toLocaleDateString()}
+              </p>
+              <span className="font-label text-xs font-semibold text-primary">Open plan →</span>
             </div>
-          </div>
+          </button>
         ))}
+        <button
+          type="button"
+          onClick={() => setView('curate')}
+          className="min-w-[320px] bg-surface-container-low rounded-xl border-2 border-dashed border-outline-variant/30 hover:border-primary/40 transition-all flex flex-col items-center justify-center p-6 gap-4 group"
+        >
+          <div className="w-12 h-12 rounded-lg flex items-center justify-center bg-primary/10 text-primary group-hover:scale-110 transition-transform">
+            <Plus size={28} />
+          </div>
+          <span className="font-headline text-lg font-bold text-on-surface">Add a course</span>
+          <span className="font-label text-sm text-on-surface-variant text-center">Upload a textbook PDF to create a new study plan</span>
+        </button>
       </div>
     </section>
 
@@ -494,7 +496,8 @@ const DashboardView = ({ setView }: { setView: (v: string) => void }) => (
       </div>
     </section>
   </div>
-);
+  );
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -882,14 +885,43 @@ const TYPE_COLORS: Record<string, string> = {
   advanced:   'bg-error/10 text-error',
 };
 
-const PlansView = ({ setView }: { setView: (v: string) => void }) => {
+const PlansView = ({
+  setView,
+  view,
+  initialSelectedPlanId,
+  onClearSelection,
+}: {
+  setView: (v: string) => void;
+  view: string;
+  initialSelectedPlanId: string | null;
+  onClearSelection: () => void;
+}) => {
   const [plans, setPlans]       = useState<SavedStudyPlan[]>(() => loadAllPlans());
   const [selected, setSelected] = useState<SavedStudyPlan | null>(null);
+
+  useEffect(() => {
+    if (view === 'library') setPlans(loadAllPlans());
+  }, [view]);
+
+  useEffect(() => {
+    if (initialSelectedPlanId && plans.length > 0) {
+      const plan = plans.find((p) => p.id === initialSelectedPlanId);
+      if (plan) setSelected(plan);
+    }
+  }, [initialSelectedPlanId, plans]);
+
+  const handleBackToList = () => {
+    setSelected(null);
+    onClearSelection();
+  };
 
   const handleDelete = (id: string) => {
     deletePlan(id);
     setPlans(loadAllPlans());
-    if (selected?.id === id) setSelected(null);
+    if (selected?.id === id) {
+      setSelected(null);
+      onClearSelection();
+    }
   };
 
   // ---- Plan detail ----
@@ -897,8 +929,11 @@ const PlansView = ({ setView }: { setView: (v: string) => void }) => {
     return (
       <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
         <div className="flex items-center gap-4">
-          <button onClick={() => setSelected(null)}
-            className="flex items-center gap-2 font-label text-sm font-bold text-primary hover:underline">
+          <button
+            type="button"
+            onClick={handleBackToList}
+            className="flex items-center gap-2 font-label text-sm font-bold text-primary hover:underline"
+          >
             <ArrowLeft size={16} /> All Plans
           </button>
           <h1 className="font-headline text-3xl font-extrabold text-on-surface">{selected.bookTitle}</h1>
@@ -1378,9 +1413,19 @@ const NightlyReviewView = () => (
 export default function App() {
   const [view, setView] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
+
+  useEffect(() => {
+    if (view !== 'library') setSelectedPlanId(null);
+  }, [view]);
+
+  const handleOpenPlan = (planId: string) => {
+    setSelectedPlanId(planId);
+    setView('library');
+  };
 
   const fetchLibrary = async () => {
     try {
@@ -1425,9 +1470,16 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.3 }}
             >
-              {view === 'dashboard' && <DashboardView setView={setView} />}
+              {view === 'dashboard' && <DashboardView setView={setView} view={view} onOpenPlan={handleOpenPlan} />}
               {view === 'curate' && <CurateView setView={setView} />}
-              {view === 'library' && <PlansView setView={setView} />}
+              {view === 'library' && (
+                <PlansView
+                  setView={setView}
+                  view={view}
+                  initialSelectedPlanId={selectedPlanId}
+                  onClearSelection={() => setSelectedPlanId(null)}
+                />
+              )}
               {view === 'study' && <StudyView />}
               {view === 'practice' && <PracticeView />}
               {view === 'timeline' && <NightlyReviewView />}
