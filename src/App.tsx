@@ -37,7 +37,7 @@ import { cn } from './lib/utils';
 import { Activity, Module, QuizQuestion, LibraryItem, AnalyzedSection, PlanDay, SavedStudyPlan } from './types';
 import { parseTextbook, ParsedPage } from './lib/pdfParser';
 import { splitIntoSections } from './lib/sectionSplitter';
-import { scheduleDays, savePlan, loadAllPlans, deletePlan } from './lib/studyPlanner';
+import { scheduleDays, savePlan, loadAllPlans, deletePlan, getStudyProgress, setStudyProgress } from './lib/studyPlanner';
 
 // --- Mock Data ---
 
@@ -99,9 +99,10 @@ const Sidebar = ({
 }) => {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'study-today', label: 'Study Today', icon: BookOpen },
+    { id: 'library', label: 'Library', icon: Library },
     { id: 'timeline', label: 'Nightly Review', icon: Moon },
     { id: 'practice', label: 'Practice', icon: HelpCircle },
-    { id: 'library', label: 'Library', icon: Library },
   ];
 
   return (
@@ -342,6 +343,7 @@ const DashboardView = ({
   onOpenPlan: (planId: string) => void;
 }) => {
   const [plans, setPlans] = useState<SavedStudyPlan[]>(() => loadAllPlans());
+  const progress = getStudyProgress();
   useEffect(() => {
     if (view === 'dashboard') setPlans(loadAllPlans());
   }, [view]);
@@ -378,7 +380,12 @@ const DashboardView = ({
         </button>
       </div>
       <div className="flex overflow-x-auto gap-6 no-scrollbar pb-6 -mx-4 px-4">
-        {plans.map((plan, idx) => (
+        {plans.map((plan, idx) => {
+          const isCurrentPlan = progress?.planId === plan.id;
+          const daysRead = isCurrentPlan && progress != null ? progress.dayIndex : 0;
+          const totalDays = plan.days.length;
+          const progressPercent = totalDays > 0 ? Math.round((daysRead / totalDays) * 100) : 0;
+          return (
           <button
             key={plan.id}
             type="button"
@@ -399,9 +406,32 @@ const DashboardView = ({
               )} />
             </div>
             <h3 className="font-headline text-xl font-bold mb-1 truncate">{plan.bookTitle}</h3>
-            <p className="text-on-surface-variant font-label text-sm mb-6">
+            <p className="text-on-surface-variant font-label text-sm mb-4">
               {plan.numDays} days · {plan.totalSections} sections
             </p>
+            {/* Per-plan progress bar */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="font-label text-[10px] text-on-surface-variant uppercase tracking-wider">Progress</span>
+                <span className="font-label text-xs text-on-surface-variant">
+                  <span className={cn(isCurrentPlan && "font-bold text-primary")}>{daysRead}</span>
+                  <span className="text-on-surface-variant/80"> / {totalDays} days</span>
+                </span>
+              </div>
+              <div className="h-2 w-full bg-surface-container-high rounded-full overflow-hidden">
+                <motion.div
+                  className={cn(
+                    'h-full rounded-full',
+                    idx % 3 === 0 && 'bg-primary',
+                    idx % 3 === 1 && 'bg-secondary',
+                    idx % 3 === 2 && 'bg-tertiary'
+                  )}
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progressPercent}%` }}
+                  transition={{ duration: 0.5, ease: 'easeOut' }}
+                />
+              </div>
+            </div>
             <div className="space-y-2">
               <p className="text-[10px] text-on-surface-variant font-label">
                 Created {new Date(plan.createdAt).toLocaleDateString()}
@@ -409,7 +439,8 @@ const DashboardView = ({
               <span className="font-label text-xs font-semibold text-primary">Open plan →</span>
             </div>
           </button>
-        ))}
+          );
+        })}
         <button
           type="button"
           onClick={() => setView('curate')}
@@ -917,6 +948,8 @@ const PlansView = ({
 
   // ---- Plan detail ----
   if (selected) {
+    const progress = getStudyProgress();
+    const isCurrentPlan = progress?.planId === selected.id;
     return (
       <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
         <div className="flex items-center gap-4">
@@ -934,8 +967,17 @@ const PlansView = ({
         </div>
 
         <div className="space-y-4">
-          {selected.days.map((day) => (
-            <div key={day.day} className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+          {selected.days.map((day) => {
+            const dayIndex0 = day.day - 1;
+            const isRead = isCurrentPlan && progress != null && dayIndex0 < progress.dayIndex;
+            return (
+            <div
+              key={day.day}
+              className={cn(
+                'rounded-xl overflow-hidden editorial-shadow',
+                isRead ? 'bg-surface-container-high ring-1 ring-outline-variant/20' : 'bg-surface-container-low'
+              )}
+            >
               {/* Day header */}
               <div className="px-6 py-4 flex items-center gap-4 border-b border-outline-variant/10">
                 <span className="w-10 h-10 rounded-xl bg-primary-container flex items-center justify-center font-headline text-sm font-bold text-on-primary-container shrink-0">
@@ -971,13 +1013,15 @@ const PlansView = ({
                   </div>
                 )}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     );
   }
 
   // ---- Plan list ----
+  const progress = getStudyProgress();
   return (
     <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
       <div className="flex items-end justify-between">
@@ -1003,9 +1047,15 @@ const PlansView = ({
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-          {plans.map((plan) => (
-            <div key={plan.id}
-              className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow hover:shadow-lg transition-all cursor-pointer group"
+          {plans.map((plan) => {
+            const isRead = progress?.planId === plan.id;
+            return (
+            <div
+              key={plan.id}
+              className={cn(
+                'rounded-xl overflow-hidden editorial-shadow hover:shadow-lg transition-all cursor-pointer group',
+                isRead ? 'bg-surface-container-high ring-1 ring-outline-variant/30' : 'bg-surface-container-low'
+              )}
               onClick={() => setSelected(plan)}>
               <div className="bg-primary px-6 py-5 text-on-primary">
                 <h3 className="font-headline text-lg font-bold truncate">{plan.bookTitle}</h3>
@@ -1036,9 +1086,151 @@ const PlansView = ({
                 </div>
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+// Study Today — resume from last position (or first unread day)
+// ---------------------------------------------------------------------------
+const STUDY_TODAY_DIFF_COLORS: Record<string, string> = {
+  light: 'bg-secondary-container text-on-secondary-container',
+  moderate: 'bg-tertiary-container text-on-tertiary-container',
+  heavy: 'bg-error/10 text-error',
+};
+const STUDY_TODAY_TYPE_COLORS: Record<string, string> = {
+  intro: 'bg-secondary-container/60 text-on-secondary-container',
+  conceptual: 'bg-primary-container/60 text-on-primary-container',
+  example: 'bg-tertiary-container/60 text-on-tertiary-container',
+  advanced: 'bg-error/10 text-error',
+};
+
+const StudyTodayView = ({ setView }: { setView: (v: string) => void }) => {
+  const [progress, setProgress] = useState(() => getStudyProgress());
+  const plans = loadAllPlans();
+
+  const resolved = (() => {
+    if (plans.length === 0) return null;
+    const plan = progress
+      ? plans.find((p) => p.id === progress.planId) ?? plans[0]
+      : plans[0];
+    const dayIndex = plan && progress?.planId === plan.id ? progress.dayIndex : 0;
+    const day = plan?.days[dayIndex] ?? plan?.days[0];
+    return plan && day ? { plan, day, dayIndex } : plan ? { plan, day: plan.days[0], dayIndex: 0 } : null;
+  })();
+
+  const handleCompleteToday = () => {
+    if (!resolved) return;
+    const nextIndex = resolved.dayIndex + 1;
+    if (nextIndex < resolved.plan.days.length) {
+      setStudyProgress({ planId: resolved.plan.id, dayIndex: nextIndex });
+      setProgress({ planId: resolved.plan.id, dayIndex: nextIndex });
+    } else {
+      setStudyProgress({ planId: resolved.plan.id, dayIndex: 0 });
+      setProgress({ planId: resolved.plan.id, dayIndex: 0 });
+    }
+  };
+
+  if (plans.length === 0) {
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 flex flex-col items-center justify-center min-h-[50vh] text-center">
+        <BookOpen className="text-on-surface-variant/40 mb-6" size={56} />
+        <h1 className="font-headline text-3xl font-bold text-on-surface mb-2">Study Today</h1>
+        <p className="text-on-surface-variant font-label text-sm max-w-md mb-8">
+          You don&apos;t have any study plans yet. Upload a textbook to create a plan, then come back here to pick up where you left off.
+        </p>
+        <button
+          onClick={() => setView('curate')}
+          className="bg-primary text-on-primary px-6 py-3 rounded-xl font-headline font-bold text-sm hover:bg-primary-dim transition-all editorial-shadow"
+        >
+          Upload Textbook
+        </button>
+      </div>
+    );
+  }
+
+  if (!resolved) {
+    return (
+      <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10">
+        <h1 className="font-headline text-3xl font-bold text-on-surface mb-4">Study Today</h1>
+        <p className="text-on-surface-variant font-label text-sm">No day to show. Open a plan from the Library to start.</p>
+        <button onClick={() => setView('library')} className="mt-4 text-primary font-label font-bold hover:underline">
+          Go to Library →
+        </button>
+      </div>
+    );
+  }
+
+  const { plan, day, dayIndex } = resolved;
+  const isLastDay = dayIndex >= plan.days.length - 1;
+
+  return (
+    <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="font-headline text-4xl font-extrabold tracking-tight text-on-surface">Study Today</h1>
+          <p className="text-on-surface-variant font-label text-sm mt-1">
+            {plan.bookTitle} · Day {day.day} of {plan.numDays}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setView('library')}
+          className="font-label text-sm font-bold text-primary hover:underline shrink-0"
+        >
+          Change plan in Library →
+        </button>
+      </header>
+
+      <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
+        <div className="px-6 py-5 flex items-center gap-4 border-b border-outline-variant/10 bg-primary/5">
+          <span className="w-12 h-12 rounded-xl bg-primary-container flex items-center justify-center font-headline text-lg font-bold text-on-primary-container shrink-0">
+            {day.day}
+          </span>
+          <div className="flex-1 min-w-0">
+            <p className="font-headline text-xl font-bold text-on-surface truncate">{day.mainConceptFocus}</p>
+            <p className="font-label text-sm text-on-surface-variant">
+              {day.sections.length} section{day.sections.length !== 1 ? 's' : ''} · ~{day.estimatedHours} hrs
+            </p>
+          </div>
+          <span className={cn('px-3 py-1 rounded-full font-label text-xs font-bold capitalize', STUDY_TODAY_DIFF_COLORS[day.difficulty] ?? '')}>
+            {day.difficulty}
+          </span>
+        </div>
+        {day.sections.length === 0 ? (
+          <p className="px-6 py-8 font-label text-sm italic text-on-surface-variant">Review day — revisit previous material.</p>
+        ) : (
+          <div className="divide-y divide-outline-variant/5">
+            {day.sections.map((sec, i) => (
+              <div key={i} className="px-6 py-4 flex items-start gap-3">
+                <span className={cn('mt-0.5 px-2 py-0.5 rounded text-[10px] font-bold uppercase shrink-0', STUDY_TODAY_TYPE_COLORS[sec.sectionType] ?? '')}>
+                  {sec.sectionType[0].toUpperCase()}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className="font-label text-sm font-bold text-on-surface">{sec.title}</p>
+                  <p className="font-label text-xs text-on-surface-variant">pp. {sec.startPage}–{sec.endPage} · {sec.estimatedReadingMinutes} min read</p>
+                </div>
+                <span className={cn('shrink-0 px-2 py-0.5 rounded font-label text-[10px] font-bold', STUDY_TODAY_DIFF_COLORS[day.difficulty] ?? '')}>
+                  {sec.workloadScore} pts
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="px-6 py-5 border-t border-outline-variant/10 flex justify-end">
+          <button
+            type="button"
+            onClick={handleCompleteToday}
+            className="bg-primary text-on-primary px-6 py-3 rounded-xl font-headline font-bold text-sm hover:bg-primary-dim transition-all editorial-shadow"
+          >
+            {isLastDay ? 'Finish day · Start over' : 'Mark as done · Next day'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 };
@@ -1462,6 +1654,7 @@ export default function App() {
               transition={{ duration: 0.3 }}
             >
               {view === 'dashboard' && <DashboardView setView={setView} view={view} onOpenPlan={handleOpenPlan} />}
+              {view === 'study-today' && <StudyTodayView setView={setView} />}
               {view === 'curate' && <CurateView setView={setView} />}
               {view === 'library' && (
                 <PlansView

@@ -1,6 +1,29 @@
 import type { AnalyzedSection, PlanDay, SavedStudyPlan } from '../types';
 
 const STORAGE_KEY = 'genai-study-plans';
+const PROGRESS_KEY = 'genai-study-progress';
+
+export interface StudyProgress {
+  planId: string;
+  dayIndex: number; // 0-based index into plan.days
+}
+
+export function getStudyProgress(): StudyProgress | null {
+  try {
+    const raw = localStorage.getItem(PROGRESS_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStudyProgress(progress: StudyProgress): void {
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+  } catch (e) {
+    console.error('setStudyProgress:', e);
+  }
+}
 
 /** Distribute sections across numDays by balancing total workload score (greedy). */
 export function scheduleDays(sections: AnalyzedSection[], numDays: number): PlanDay[] {
