@@ -12,6 +12,8 @@ import bcrypt from 'bcrypt';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import User from './models/User.js';
+import authenticateJWT from './middleware/auth.js';
+import dataRouter from './routes/data.js';
 
 // Ensure we load environment variables from either project root .env or server/.env
 const __filename = fileURLToPath(import.meta.url);
@@ -198,6 +200,9 @@ app.post('/api/logout', (req, res) => {
     return res.json({ success: true });
   });
 });
+
+// --- User study data routes (JWT-protected) ---
+app.use('/api/data', authenticateJWT, dataRouter);
 
 // --- Protected example route using session ---
 app.get('/api/protected-with-session', (req, res) => {

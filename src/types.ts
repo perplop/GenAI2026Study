@@ -108,4 +108,6 @@ export interface SavedStudyPlan {
   numDays: number;
   totalSections: number;
   days: PlanDay[];
+  /** Filename on the server (via /api/files/:filename) for PDF rendering. */
+  pdfFileName?: string;
 }

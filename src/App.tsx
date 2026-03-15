@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import AuthPage from './AuthPage';
+import AnalyticsView from './AnalyticsView';
+import PdfViewer from './PdfViewer';
 import type { AuthUser } from './LoginForm';
 import { 
   LayoutDashboard, 
@@ -39,13 +41,15 @@ import { cn } from './lib/utils';
 import { Activity, Module, QuizQuestion, LibraryItem, AnalyzedSection, PlanDay, SavedStudyPlan } from './types';
 import { parseTextbook, ParsedPage } from './lib/pdfParser';
 import { splitIntoSections } from './lib/sectionSplitter';
-import { scheduleDays, savePlan, loadAllPlans, deletePlan, getStudyProgress, setStudyProgress } from './lib/studyPlanner';
+import { scheduleDays, savePlan, loadAllPlans, deletePlan, getStudyProgress, setStudyProgress, type StudyProgress } from './lib/studyPlanner';
 import {
   logActivity, loadActivities, relativeTime,
   getStreak, recordPracticeDay,
   saveQuizScore, loadQuizScores,
   getDailyGoal, setDailyGoalTarget, addStudiedMinutes,
   type TrackedActivity,
+  type QuizScore,
+  type DailyGoalData,
 } from './lib/activityTracker';
 import {
   generateQuizzes, generateFlashcards, generateReviewSummary,
@@ -118,6 +122,7 @@ const Sidebar = ({
     { id: 'library', label: 'Library', icon: Library },
     { id: 'timeline', label: 'Nightly Review', icon: Moon },
     { id: 'practice', label: 'Practice', icon: HelpCircle },
+    { id: 'analytics', label: 'Analytics', icon: TrendingUp },
   ];
 
   return (
@@ -388,10 +393,16 @@ const TopNav = ({
 
 const ScholarTipWidget = ({ plans }: { plans: SavedStudyPlan[] }) => {
   const [tip, setTip] = useState<string | null>(null);
-  const progress = getStudyProgress();
+  const [progress, setProgressState] = useState<StudyProgress | null>(null);
+  const [quizScores, setQuizScores] = useState<QuizScore[]>([]);
+
+  useEffect(() => {
+    getStudyProgress().then(setProgressState);
+    loadQuizScores().then(setQuizScores);
+  }, []);
+
   const plan = progress ? plans.find(p => p.id === progress.planId) : plans[0];
   const currentSection = plan?.days[progress?.dayIndex ?? 0]?.sections[0];
-  const quizScores = loadQuizScores();
   const totalQ = quizScores.length;
   const correctQ = quizScores.reduce((s, q) => s + q.correct, 0);
   const accuracy = totalQ > 0 ? Math.round((correctQ / totalQ) * 100) : undefined;
@@ -399,7 +410,7 @@ const ScholarTipWidget = ({ plans }: { plans: SavedStudyPlan[] }) => {
   useEffect(() => {
     generateScholarTip(plan?.bookTitle ?? 'your textbook', currentSection?.title, accuracy)
       .then(t => { if (t) setTip(t); });
-  }, []);
+  }, [plan?.bookTitle, currentSection?.title, accuracy]);
 
   return (
     <div className="bg-primary-container/20 rounded-2xl p-8">
@@ -420,25 +431,38 @@ const DashboardView = ({
   setView,
   view,
   onOpenPlan,
+  onStudyPlan,
   activities,
 }: {
   setView: (v: string) => void;
   view: string;
   onOpenPlan: (planId: string) => void;
+  onStudyPlan: (planId: string) => void;
   activities: TrackedActivity[];
 }) => {
-  const [plans, setPlans] = useState<SavedStudyPlan[]>(() => loadAllPlans());
-  const progress = getStudyProgress();
-  const dailyGoal = getDailyGoal();
+  const [plans, setPlans] = useState<SavedStudyPlan[]>([]);
+  const [progress, setProgressState] = useState<StudyProgress | null>(null);
+  const [dailyGoal, setDailyGoalState] = useState<DailyGoalData>({ targetHours: 2, studiedMinutes: 0 });
+
+  useEffect(() => {
+    loadAllPlans().then(setPlans);
+    getStudyProgress().then(setProgressState);
+    getDailyGoal().then(setDailyGoalState);
+  }, []);
+
+  useEffect(() => {
+    if (view === 'dashboard') {
+      loadAllPlans().then(setPlans);
+      getStudyProgress().then(setProgressState);
+      getDailyGoal().then(setDailyGoalState);
+    }
+  }, [view]);
+
   const goalPercent = dailyGoal.targetHours > 0
     ? Math.min(100, Math.round((dailyGoal.studiedMinutes / (dailyGoal.targetHours * 60)) * 100))
     : 0;
   const goalStrokeDashoffset = 440 - (440 * goalPercent) / 100;
   const hoursLeft = Math.max(0, dailyGoal.targetHours - dailyGoal.studiedMinutes / 60);
-
-  useEffect(() => {
-    if (view === 'dashboard') setPlans(loadAllPlans());
-  }, [view]);
 
   return (
   <div className="max-w-[1440px] mx-auto px-6 py-10 lg:px-16">
@@ -481,10 +505,7 @@ const DashboardView = ({
           <button
             key={plan.id}
             type="button"
-            onClick={() => {
-              onOpenPlan(plan.id);
-              setView('library');
-            }}
+            onClick={() => onStudyPlan(plan.id)}
             className="min-w-[320px] text-left bg-surface-container-lowest p-6 rounded-xl border border-transparent hover:border-primary/10 transition-all cursor-pointer group shadow-sm"
           >
             <div className={cn(
@@ -528,7 +549,7 @@ const DashboardView = ({
               <p className="text-[10px] text-on-surface-variant font-label">
                 Created {new Date(plan.createdAt).toLocaleDateString()}
               </p>
-              <span className="font-label text-xs font-semibold text-primary">Open plan →</span>
+              <span className="font-label text-xs font-semibold text-primary">Start studying →</span>
             </div>
           </button>
           );
@@ -606,9 +627,10 @@ const DashboardView = ({
               : `You're ${goalPercent}% of the way to your study goal. ${hoursLeft.toFixed(1)}h to go!`}
           </p>
           <button
-            onClick={() => {
+            onClick={async () => {
               const next = dailyGoal.targetHours === 2 ? 3 : dailyGoal.targetHours === 3 ? 4 : dailyGoal.targetHours === 4 ? 1 : 2;
-              setDailyGoalTarget(next);
+              await setDailyGoalTarget(next);
+              setDailyGoalState(prev => ({ ...prev, targetHours: next }));
             }}
             className="w-full py-3 rounded-full border border-primary text-primary font-headline font-bold text-sm hover:bg-primary/5 transition-colors"
           >
@@ -675,6 +697,7 @@ const CurateView = ({ setView }: { setView: (v: string) => void }) => {
     totalPages: number;
     fileName: string;
     sections: AnalyzedSection[];
+    file: File;
   } | null>(null);
   const [numDays, setNumDays] = useState(14);
   const [error, setError] = useState<string | null>(null);
@@ -691,7 +714,7 @@ const CurateView = ({ setView }: { setView: (v: string) => void }) => {
     try {
       const result = await parseTextbook(file, (current, total) => setParseProgress({ current, total }));
       const sections = splitIntoSections(result.pages, result.totalPages, result.fileName);
-      setParsedData({ pages: result.pages, totalPages: result.totalPages, fileName: result.fileName, sections });
+      setParsedData({ pages: result.pages, totalPages: result.totalPages, fileName: result.fileName, sections, file });
       setStatus('configuring');
     } catch (e) {
       console.error(e);
@@ -707,15 +730,28 @@ const CurateView = ({ setView }: { setView: (v: string) => void }) => {
       let days = scheduleDays(parsedData.sections, numDays);
       days = await enrichDaysWithAI(days);
       const planTitle = parsedData.fileName.replace(/\.pdf$/i, '');
-      savePlan({
+      // Upload PDF to server for later viewing
+      let pdfFileName: string | undefined;
+      try {
+        const formData = new FormData();
+        formData.append('file', parsedData.file);
+        const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
+        if (uploadRes.ok) {
+          const uploadData = await uploadRes.json();
+          pdfFileName = uploadData.file?.id;
+        }
+      } catch { /* upload failed — plan still works without PDF viewer */ }
+
+      await savePlan({
         id: Date.now().toString(),
         bookTitle: planTitle,
         createdAt: new Date().toISOString(),
         numDays: days.length,
         totalSections: parsedData.sections.length,
         days,
+        pdfFileName,
       });
-      logActivity('plan', 'Study Plan Created', `Generated ${days.length}-day plan for "${planTitle}" with ${parsedData.sections.length} sections.`);
+      await logActivity('plan', 'Study Plan Created', `Generated ${days.length}-day plan for "${planTitle}" with ${parsedData.sections.length} sections.`);
       setStatus('saved');
     } catch (e) {
       console.error(e);
@@ -1015,17 +1051,28 @@ const PlansView = ({
   view,
   initialSelectedPlanId,
   onClearSelection,
+  onStudyPlan,
 }: {
   setView: (v: string) => void;
   view: string;
   initialSelectedPlanId: string | null;
   onClearSelection: () => void;
+  onStudyPlan: (planId: string) => void;
 }) => {
-  const [plans, setPlans]       = useState<SavedStudyPlan[]>(() => loadAllPlans());
+  const [plans, setPlans]       = useState<SavedStudyPlan[]>([]);
   const [selected, setSelected] = useState<SavedStudyPlan | null>(null);
+  const [progress, setProgressState] = useState<StudyProgress | null>(null);
 
   useEffect(() => {
-    if (view === 'library') setPlans(loadAllPlans());
+    loadAllPlans().then(setPlans);
+    getStudyProgress().then(setProgressState);
+  }, []);
+
+  useEffect(() => {
+    if (view === 'library') {
+      loadAllPlans().then(setPlans);
+      getStudyProgress().then(setProgressState);
+    }
   }, [view]);
 
   useEffect(() => {
@@ -1040,9 +1087,10 @@ const PlansView = ({
     onClearSelection();
   };
 
-  const handleDelete = (id: string) => {
-    deletePlan(id);
-    setPlans(loadAllPlans());
+  const handleDelete = async (id: string) => {
+    await deletePlan(id);
+    const updated = await loadAllPlans();
+    setPlans(updated);
     if (selected?.id === id) {
       setSelected(null);
       onClearSelection();
@@ -1051,7 +1099,6 @@ const PlansView = ({
 
   // ---- Plan detail ----
   if (selected) {
-    const progress = getStudyProgress();
     const isCurrentPlan = progress?.planId === selected.id;
     return (
       <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
@@ -1064,9 +1111,15 @@ const PlansView = ({
             <ArrowLeft size={16} /> All Plans
           </button>
           <h1 className="font-headline text-3xl font-extrabold text-on-surface">{selected.bookTitle}</h1>
-          <span className="ml-auto font-label text-xs text-on-surface-variant">
+          <span className="ml-auto font-label text-xs text-on-surface-variant mr-4">
             {selected.numDays} days · {selected.totalSections} sections · {new Date(selected.createdAt).toLocaleDateString()}
           </span>
+          <button
+            onClick={() => onStudyPlan(selected.id)}
+            className="shrink-0 bg-primary text-on-primary px-5 py-2.5 rounded-xl font-headline font-bold text-sm hover:bg-primary-dim transition-all editorial-shadow flex items-center gap-2"
+          >
+            <BookOpen size={16} /> Study This Plan
+          </button>
         </div>
 
         <div className="space-y-4">
@@ -1121,7 +1174,6 @@ const PlansView = ({
   }
 
   // ---- Plan list ----
-  const progress = getStudyProgress();
   return (
     <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10 space-y-8">
       <div className="flex items-end justify-between">
@@ -1210,31 +1262,40 @@ const STUDY_TODAY_TYPE_COLORS: Record<string, string> = {
 };
 
 const StudyTodayView = ({ setView }: { setView: (v: string) => void }) => {
-  const [progress, setProgress] = useState(() => getStudyProgress());
-  const plans = loadAllPlans();
+  const [progress, setProgress] = useState<StudyProgress | null>(null);
+  const [plans, setPlans] = useState<SavedStudyPlan[]>([]);
+  const [selectedPlanIdLocal, setSelectedPlanIdLocal] = useState<string | null>(null);
+
+  useEffect(() => {
+    getStudyProgress().then(setProgress);
+    loadAllPlans().then(setPlans);
+  }, []);
 
   const resolved = (() => {
     if (plans.length === 0) return null;
-    const plan = progress
-      ? plans.find((p) => p.id === progress.planId) ?? plans[0]
-      : plans[0];
+    // Use explicitly selected plan, then progress, then first plan
+    const plan = selectedPlanIdLocal
+      ? plans.find(p => p.id === selectedPlanIdLocal) ?? plans[0]
+      : progress
+        ? plans.find((p) => p.id === progress.planId) ?? plans[0]
+        : plans[0];
     const dayIndex = plan && progress?.planId === plan.id ? progress.dayIndex : 0;
     const day = plan?.days[dayIndex] ?? plan?.days[0];
     return plan && day ? { plan, day, dayIndex } : plan ? { plan, day: plan.days[0], dayIndex: 0 } : null;
   })();
 
-  const handleCompleteToday = () => {
+  const handleCompleteToday = async () => {
     if (!resolved) return;
     const { plan, day, dayIndex } = resolved;
     const estMins = Math.round(day.estimatedHours * 60);
-    addStudiedMinutes(estMins);
-    logActivity('study', `Completed Day ${day.day}`, `Finished ${day.sections.length} section(s) in "${plan.bookTitle}" (~${day.estimatedHours}h).`);
+    await addStudiedMinutes(estMins);
+    await logActivity('study', `Completed Day ${day.day}`, `Finished ${day.sections.length} section(s) in "${plan.bookTitle}" (~${day.estimatedHours}h).`);
     const nextIndex = dayIndex + 1;
     if (nextIndex < plan.days.length) {
-      setStudyProgress({ planId: plan.id, dayIndex: nextIndex });
+      await setStudyProgress({ planId: plan.id, dayIndex: nextIndex });
       setProgress({ planId: plan.id, dayIndex: nextIndex });
     } else {
-      setStudyProgress({ planId: plan.id, dayIndex: 0 });
+      await setStudyProgress({ planId: plan.id, dayIndex: 0 });
       setProgress({ planId: plan.id, dayIndex: 0 });
     }
   };
@@ -1281,13 +1342,22 @@ const StudyTodayView = ({ setView }: { setView: (v: string) => void }) => {
             {plan.bookTitle} · Day {day.day} of {plan.numDays}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setView('library')}
-          className="font-label text-sm font-bold text-primary hover:underline shrink-0"
-        >
-          Change plan in Library →
-        </button>
+        {plans.length > 1 && (
+          <select
+            value={plan.id}
+            onChange={(e) => {
+              setSelectedPlanIdLocal(e.target.value);
+              setStudyProgress({ planId: e.target.value, dayIndex: 0 }).then(() => {
+                setProgress({ planId: e.target.value, dayIndex: 0 });
+              });
+            }}
+            className="bg-surface-container-lowest border border-outline-variant/20 rounded-xl px-4 py-2.5 font-label text-sm text-on-surface focus:ring-2 focus:ring-primary/30 focus:outline-none shrink-0"
+          >
+            {plans.map(p => (
+              <option key={p.id} value={p.id}>{p.bookTitle}</option>
+            ))}
+          </select>
+        )}
       </header>
 
       <div className="bg-surface-container-low rounded-xl overflow-hidden editorial-shadow">
@@ -1437,10 +1507,19 @@ const AISummary = ({ context, aiEnabled, sectionTitle, bookTitle }: { context?: 
   );
 };
 
-const StudyView = ({ setView, aiEnabled }: { setView: (v: string) => void; aiEnabled: boolean }) => {
-  const plans = loadAllPlans();
-  const progress = getStudyProgress();
-  const plan = progress ? plans.find(p => p.id === progress.planId) : plans[0];
+const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) => void; aiEnabled: boolean; activePlanId?: string | null }) => {
+  const [plans, setPlans] = useState<SavedStudyPlan[]>([]);
+  const [progress, setProgressState] = useState<StudyProgress | null>(null);
+
+  useEffect(() => {
+    loadAllPlans().then(setPlans);
+    getStudyProgress().then(setProgressState);
+  }, []);
+
+  // If a specific plan was requested, use it; otherwise fall back to progress or first plan
+  const plan = activePlanId
+    ? plans.find(p => p.id === activePlanId) ?? plans[0]
+    : progress ? plans.find(p => p.id === progress.planId) ?? plans[0] : plans[0];
   const dayIndex = plan && progress?.planId === plan.id ? progress.dayIndex : 0;
   const day = plan?.days[dayIndex];
   const allSections = plan?.days.flatMap(d => d.sections) ?? [];
@@ -1618,7 +1697,7 @@ const StudyView = ({ setView, aiEnabled }: { setView: (v: string) => void; aiEna
                     return (
                     <button
                       key={idx}
-                      onClick={() => {
+                      onClick={async () => {
                         if (quizRevealed) return;
                         setQuizAnswer(idx);
                         setQuizRevealed(true);
@@ -1735,6 +1814,21 @@ const StudyView = ({ setView, aiEnabled }: { setView: (v: string) => void; aiEna
               </button>
             </div>
           )}
+
+          {/* Inline PDF Viewer */}
+          {plan.pdfFileName && currentSection && (
+            <section className="my-12">
+              <div className="flex items-center gap-3 mb-4">
+                <Maximize2 size={20} className="text-primary" />
+                <h3 className="font-headline text-sm font-bold text-primary tracking-wide uppercase">Original PDF — Pages {currentSection.startPage}–{currentSection.endPage}</h3>
+              </div>
+              <PdfViewer
+                pdfUrl={`/api/files/${plan.pdfFileName}`}
+                startPage={currentSection.startPage}
+                endPage={currentSection.endPage}
+              />
+            </section>
+          )}
         </div>
       </article>
     </main>
@@ -1743,14 +1837,32 @@ const StudyView = ({ setView, aiEnabled }: { setView: (v: string) => void; aiEna
 };
 
 const PracticeView = ({ setView, aiEnabled }: { setView: (v: string) => void; aiEnabled: boolean }) => {
-  const plans = loadAllPlans();
+  const [plans, setPlans] = useState<SavedStudyPlan[]>([]);
+  const [progress, setProgressState] = useState<StudyProgress | null>(null);
+  const [streak, setStreak] = useState<number>(0);
+  const [quizScores, setQuizScores] = useState<QuizScore[]>([]);
+
+  useEffect(() => {
+    loadAllPlans().then(setPlans);
+    getStudyProgress().then(setProgressState);
+    getStreak().then(setStreak);
+    loadQuizScores().then(setQuizScores);
+  }, []);
+
   const allSections = plans.flatMap(p => p.days.flatMap(d => d.sections));
-  const progress = getStudyProgress();
   const plan = progress ? plans.find(p => p.id === progress.planId) : plans[0];
 
   // Unique topics for sidebar
   const topics = [...new Set(allSections.map(s => s.chapterTitle))];
-  const [selectedTopic, setSelectedTopic] = useState<string | null>(topics[0] ?? null);
+  const [selectedTopic, setSelectedTopic] = useState<string | null>(null);
+
+  // Set initial topic once plans load
+  useEffect(() => {
+    if (topics.length > 0 && selectedTopic === null) {
+      setSelectedTopic(topics[0]);
+    }
+  }, [plans]);
+
   const topicSections = selectedTopic ? allSections.filter(s => s.chapterTitle === selectedTopic) : allSections;
 
   // AI-generated questions
@@ -1760,7 +1872,6 @@ const PracticeView = ({ setView, aiEnabled }: { setView: (v: string) => void; ai
   const [quizAnswer, setQuizAnswer] = useState<number | null>(null);
   const [quizRevealed, setQuizRevealed] = useState(false);
   const [score, setScore] = useState({ correct: 0, total: 0 });
-  const streak = getStreak();
 
   // Generate questions when topic changes
   useEffect(() => {
@@ -1787,7 +1898,6 @@ const PracticeView = ({ setView, aiEnabled }: { setView: (v: string) => void; ai
   const totalQ = aiQuestions.length;
 
   // Focus suggestion from quiz scores
-  const quizScores = loadQuizScores();
   const wrongTopics = quizScores.filter(s => s.correct === 0).map(s => s.sectionTitle);
   const focusSuggestion = wrongTopics.length > 0
     ? `Based on your quiz results, review "${wrongTopics[0]}". You missed questions in this area.`
@@ -1890,7 +2000,7 @@ const PracticeView = ({ setView, aiEnabled }: { setView: (v: string) => void; ai
                     return (
                     <button
                       key={idx}
-                      onClick={() => {
+                      onClick={async () => {
                         if (quizRevealed) return;
                         setQuizAnswer(idx);
                         setQuizRevealed(true);
@@ -1954,12 +2064,19 @@ const PracticeView = ({ setView, aiEnabled }: { setView: (v: string) => void; ai
 };
 
 const NightlyReviewView = ({ setView, aiEnabled }: { setView: (v: string) => void; aiEnabled: boolean }) => {
-  const plans = loadAllPlans();
-  const progress = getStudyProgress();
+  const [plans, setPlans] = useState<SavedStudyPlan[]>([]);
+  const [progress, setProgressState] = useState<StudyProgress | null>(null);
+  const [quizScores, setQuizScores] = useState<QuizScore[]>([]);
+
+  useEffect(() => {
+    loadAllPlans().then(setPlans);
+    getStudyProgress().then(setProgressState);
+    loadQuizScores().then(setQuizScores);
+  }, []);
+
   const plan = progress ? plans.find(p => p.id === progress.planId) : plans[0];
   const dayIndex = plan && progress?.planId === plan.id ? Math.max(0, progress.dayIndex - 1) : 0;
   const day = plan?.days[dayIndex];
-  const quizScores = loadQuizScores();
   const planScores = quizScores.filter(s => s.planId === (plan?.id ?? ''));
   const totalQuiz = planScores.length;
   const correctQuiz = planScores.reduce((s, q) => s + q.correct, 0);
@@ -2158,16 +2275,17 @@ export default function App() {
   const [view, setView] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [studyPlanId, setStudyPlanId] = useState<string | null>(null);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
-  const [activities, setActivities] = useState<TrackedActivity[]>(() => loadActivities());
+  const [activities, setActivities] = useState<TrackedActivity[]>([]);
   const [darkMode, setDarkMode] = useState(() => localStorage.getItem('genai-dark-mode') === 'true');
   const [aiAssistance, setAiAssistance] = useState(() => localStorage.getItem('genai-ai-off') !== 'true');
 
   // Refresh activities when navigating
   useEffect(() => {
-    setActivities(loadActivities());
+    loadActivities().then(setActivities);
   }, [view]);
 
   // Apply dark mode class to root element
@@ -2187,6 +2305,11 @@ export default function App() {
   const handleOpenPlan = (planId: string) => {
     setSelectedPlanId(planId);
     setView('library');
+  };
+
+  const handleStudyPlan = (planId: string) => {
+    setStudyPlanId(planId);
+    setView('study');
   };
 
   const handleSignOut = () => {
@@ -2275,7 +2398,7 @@ export default function App() {
               exit={{ opacity: 0, y: -10 }}
               transition={{ duration: 0.3 }}
             >
-              {view === 'dashboard' && <DashboardView setView={setView} view={view} onOpenPlan={handleOpenPlan} activities={activities} />}
+              {view === 'dashboard' && <DashboardView setView={setView} view={view} onOpenPlan={handleOpenPlan} onStudyPlan={handleStudyPlan} activities={activities} />}
               {view === 'study-today' && <StudyTodayView setView={setView} />}
               {view === 'curate' && <CurateView setView={setView} />}
               {view === 'library' && (
@@ -2284,11 +2407,13 @@ export default function App() {
                   view={view}
                   initialSelectedPlanId={selectedPlanId}
                   onClearSelection={() => setSelectedPlanId(null)}
+                  onStudyPlan={handleStudyPlan}
                 />
               )}
-              {view === 'study' && <StudyView setView={setView} aiEnabled={aiAssistance} />}
+              {view === 'study' && <StudyView setView={setView} aiEnabled={aiAssistance} activePlanId={studyPlanId} />}
               {view === 'practice' && <PracticeView setView={setView} aiEnabled={aiAssistance} />}
               {view === 'timeline' && <NightlyReviewView setView={setView} aiEnabled={aiAssistance} />}
+              {view === 'analytics' && <AnalyticsView setView={setView} />}
             </motion.div>
           </AnimatePresence>
         </main>

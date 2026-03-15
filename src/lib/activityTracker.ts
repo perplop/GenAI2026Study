@@ -1,21 +1,22 @@
-/** Lightweight localStorage-based activity tracker. */
-import { userKey } from './userContext';
+/** Lightweight activity tracker — backed by API for logged-in users, localStorage for guests. */
+import {
+  fetchActivities, createActivity,
+  fetchQuizScores, createQuizScore,
+  fetchStreak, updateStreak,
+  fetchDailyGoal, updateDailyGoal,
+  type ActivityData, type QuizScoreData, type StreakData, type DailyGoalData,
+} from './apiClient';
 
-const MAX_ACTIVITIES = 50;
+// Re-export types under the names the rest of the app uses
+export type TrackedActivity = ActivityData;
+export type QuizScore = QuizScoreData;
+export { type DailyGoalData };
 
-export interface TrackedActivity {
-  id: string;
-  type: 'quiz' | 'highlight' | 'flashcard' | 'plan' | 'study' | 'practice';
-  title: string;
-  description: string;
-  timestamp: string; // ISO string
-}
-
-export function logActivity(
+export async function logActivity(
   type: TrackedActivity['type'],
   title: string,
   description: string
-): TrackedActivity {
+): Promise<TrackedActivity> {
   const activity: TrackedActivity = {
     id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
     type,
@@ -23,24 +24,12 @@ export function logActivity(
     description,
     timestamp: new Date().toISOString(),
   };
-  const all = loadActivities();
-  all.unshift(activity);
-  if (all.length > MAX_ACTIVITIES) all.length = MAX_ACTIVITIES;
-  try {
-    localStorage.setItem(userKey('activities'),JSON.stringify(all));
-  } catch (e) {
-    console.error('logActivity:', e);
-  }
+  await createActivity(activity);
   return activity;
 }
 
-export function loadActivities(): TrackedActivity[] {
-  try {
-    const raw = localStorage.getItem(userKey('activities'));
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+export async function loadActivities(): Promise<TrackedActivity[]> {
+  return fetchActivities();
 }
 
 /** Human-friendly relative time string. */
@@ -59,12 +48,6 @@ export function relativeTime(iso: string): string {
 
 // ── Streak tracking ────────────────────────────────────────────────────────
 
-
-interface StreakData {
-  currentStreak: number;
-  lastPracticeDate: string; // YYYY-MM-DD
-}
-
 function todayStr(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -75,101 +58,51 @@ function yesterdayStr(): string {
   return d.toISOString().slice(0, 10);
 }
 
-export function getStreak(): number {
-  try {
-    const raw = localStorage.getItem(userKey('practice-streak'));
-    if (!raw) return 0;
-    const data: StreakData = JSON.parse(raw);
-    if (data.lastPracticeDate === todayStr() || data.lastPracticeDate === yesterdayStr()) {
-      return data.currentStreak;
-    }
-    return 0; // streak broken
-  } catch {
-    return 0;
+export async function getStreak(): Promise<number> {
+  const data = await fetchStreak();
+  if (data.lastPracticeDate === todayStr() || data.lastPracticeDate === yesterdayStr()) {
+    return data.currentStreak;
   }
+  return 0;
 }
 
-export function recordPracticeDay(): number {
+export async function recordPracticeDay(): Promise<number> {
   const today = todayStr();
-  try {
-    const raw = localStorage.getItem(userKey('practice-streak'));
-    let data: StreakData = raw ? JSON.parse(raw) : { currentStreak: 0, lastPracticeDate: '' };
-    if (data.lastPracticeDate === today) return data.currentStreak; // already recorded today
-    if (data.lastPracticeDate === yesterdayStr()) {
-      data.currentStreak += 1;
-    } else {
-      data.currentStreak = 1;
-    }
-    data.lastPracticeDate = today;
-    localStorage.setItem(userKey('practice-streak'),JSON.stringify(data));
-    return data.currentStreak;
-  } catch {
-    return 1;
+  const data = await fetchStreak();
+  if (data.lastPracticeDate === today) return data.currentStreak;
+  let newStreak: number;
+  if (data.lastPracticeDate === yesterdayStr()) {
+    newStreak = data.currentStreak + 1;
+  } else {
+    newStreak = 1;
   }
+  const updated: StreakData = { currentStreak: newStreak, lastPracticeDate: today };
+  await updateStreak(updated);
+  return newStreak;
 }
 
 // ── Quiz score tracking ────────────────────────────────────────────────────
 
-
-export interface QuizScore {
-  planId: string;
-  sectionTitle: string;
-  correct: number;
-  total: number;
-  timestamp: string;
+export async function saveQuizScore(score: QuizScore): Promise<void> {
+  return createQuizScore(score);
 }
 
-export function saveQuizScore(score: QuizScore): void {
-  try {
-    const raw = localStorage.getItem(userKey('quiz-scores'));
-    const list: QuizScore[] = raw ? JSON.parse(raw) : [];
-    list.unshift(score);
-    if (list.length > 100) list.length = 100;
-    localStorage.setItem(userKey('quiz-scores'),JSON.stringify(list));
-  } catch (e) {
-    console.error('saveQuizScore:', e);
-  }
-}
-
-export function loadQuizScores(): QuizScore[] {
-  try {
-    const raw = localStorage.getItem(userKey('quiz-scores'));
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+export async function loadQuizScores(): Promise<QuizScore[]> {
+  return fetchQuizScores();
 }
 
 // ── Daily study goal ───────────────────────────────────────────────────────
 
-
-interface DailyGoalData {
-  targetHours: number;
-  studiedMinutes: number;
-  date: string; // YYYY-MM-DD
+export async function getDailyGoal(): Promise<DailyGoalData> {
+  return fetchDailyGoal();
 }
 
-export function getDailyGoal(): DailyGoalData {
-  try {
-    const raw = localStorage.getItem(userKey('daily-goal'));
-    if (raw) {
-      const data: DailyGoalData = JSON.parse(raw);
-      if (data.date === todayStr()) return data;
-    }
-  } catch { /* ignore */ }
-  return { targetHours: 2, studiedMinutes: 0, date: todayStr() };
+export async function setDailyGoalTarget(hours: number): Promise<void> {
+  const data = await fetchDailyGoal();
+  await updateDailyGoal({ ...data, targetHours: hours, date: todayStr() });
 }
 
-export function setDailyGoalTarget(hours: number): void {
-  const data = getDailyGoal();
-  data.targetHours = hours;
-  data.date = todayStr();
-  localStorage.setItem(userKey('daily-goal'),JSON.stringify(data));
-}
-
-export function addStudiedMinutes(mins: number): void {
-  const data = getDailyGoal();
-  data.studiedMinutes += mins;
-  data.date = todayStr();
-  localStorage.setItem(userKey('daily-goal'),JSON.stringify(data));
+export async function addStudiedMinutes(mins: number): Promise<void> {
+  const data = await fetchDailyGoal();
+  await updateDailyGoal({ ...data, studiedMinutes: data.studiedMinutes + mins, date: todayStr() });
 }
