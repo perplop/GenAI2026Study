@@ -124,6 +124,7 @@ export function splitIntoSections(
         formulaDensity: fD,
         sectionType,
         workloadScore,
+        textExcerpt: text.slice(0, 2000),
       });
     }
     return sections;
@@ -154,6 +155,7 @@ export function splitIntoSections(
       formulaDensity: fD,
       sectionType,
       workloadScore,
+      textExcerpt: text.slice(0, 2000),
     });
   }
 

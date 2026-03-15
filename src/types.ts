@@ -85,6 +85,8 @@ export interface AnalyzedSection extends RawSection {
   sectionType: 'intro' | 'conceptual' | 'example' | 'advanced';
   /** Composite effort-minutes used for scheduling. */
   workloadScore: number;
+  /** First ~2000 chars of the section text, used for the reading view. */
+  textExcerpt?: string;
 }
 
 /** One day in the generated study plan. */
