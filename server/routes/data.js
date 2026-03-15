@@ -19,6 +19,7 @@ router.get('/plans', async (req, res) => {
       numDays: d.numDays,
       totalSections: d.totalSections,
       days: d.days,
+      pdfFileName: d.pdfFileName,
     }));
     res.json(plans);
   } catch (e) {
@@ -29,10 +30,10 @@ router.get('/plans', async (req, res) => {
 
 router.put('/plans/:planId', async (req, res) => {
   try {
-    const { bookTitle, createdAt, numDays, totalSections, days } = req.body;
+    const { bookTitle, createdAt, numDays, totalSections, days, pdfFileName } = req.body;
     await StudyPlan.findOneAndUpdate(
       { userId: req.userId, planId: req.params.planId },
-      { userId: req.userId, planId: req.params.planId, bookTitle, createdAt, numDays, totalSections, days },
+      { userId: req.userId, planId: req.params.planId, bookTitle, createdAt, numDays, totalSections, days, pdfFileName },
       { upsert: true, new: true }
     );
     res.json({ success: true });

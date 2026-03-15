@@ -8,6 +8,7 @@ const studyPlanSchema = new mongoose.Schema({
   numDays: { type: Number },
   totalSections: { type: Number },
   days: { type: mongoose.Schema.Types.Mixed, default: [] },
+  pdfFileName: { type: String },
 }, { timestamps: false });
 
 studyPlanSchema.index({ userId: 1, planId: 1 }, { unique: true });

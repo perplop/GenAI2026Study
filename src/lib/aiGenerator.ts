@@ -228,18 +228,39 @@ export async function generateScholarSummary(
   textExcerpt: string,
   bookTitle: string
 ): Promise<string | null> {
-  const prompt = `You are an expert study assistant. A student is reading a section titled "${sectionTitle}" from "${bookTitle}".
+  const prompt = `You are an expert study assistant. A student is reading "${sectionTitle}" from "${bookTitle}".
 
-Here is the text they're studying:
+Text:
 ${textExcerpt.slice(0, 2000)}
 
-Write a helpful study summary that:
-1. Identifies the 3-5 most important concepts in this section
-2. Explains each concept clearly and concisely
-3. Highlights connections between concepts
-4. Ends with a "What to focus on" note
+Write a very concise summary (max 100 words) with:
+- 3-4 bullet points covering the key concepts
+- One sentence on what to focus on
 
-Use bullet points for the key concepts. Keep the total summary under 300 words. Write in a clear, engaging style appropriate for a student.`;
+Be direct and brief. No introductions or filler.`;
 
   return chatText(prompt);
+}
+
+// ── Concise Summary (for Study View main content) ─────────────────────────
+
+/**
+ * Generate a super concise plain-text summary (2-3 sentences, no markdown).
+ */
+export async function generateConciseSummary(
+  sectionTitle: string,
+  textExcerpt: string,
+): Promise<string | null> {
+  const key = cacheKey('concise', sectionTitle.replace(/\W+/g, '_').slice(0, 40));
+  const cached = getCache<string>(key);
+  if (cached) return cached;
+
+  const prompt = `Summarize this text in 2-3 plain sentences. No bullet points, no markdown, no headers. Just a brief plain-text overview.
+
+Text:
+${textExcerpt.slice(0, 2000)}`;
+
+  const result = await chatText(prompt);
+  if (result) setCache(key, result);
+  return result;
 }

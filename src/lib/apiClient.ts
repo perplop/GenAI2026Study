@@ -47,6 +47,7 @@ export interface SavedStudyPlanData {
   numDays: number;
   totalSections: number;
   days: unknown[];
+  pdfFileName?: string;
 }
 
 export async function fetchPlans(): Promise<SavedStudyPlanData[]> {

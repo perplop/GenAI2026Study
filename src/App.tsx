@@ -53,7 +53,7 @@ import {
 } from './lib/activityTracker';
 import {
   generateQuizzes, generateFlashcards, generateReviewSummary,
-  generateScholarTip, generateScholarSummary,
+  generateScholarTip, generateScholarSummary, generateConciseSummary,
   type GeneratedQuiz, type GeneratedFlashcard, type ReviewSummary,
 } from './lib/aiGenerator';
 import { setCurrentUserId } from './lib/userContext';
@@ -1527,9 +1527,13 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
   const totalSections = allSections.length;
   const progressPct = totalSections > 0 ? Math.round((completedSections / totalSections) * 100) : 0;
 
-  const [sideTab, setSideTab] = useState<'toc' | 'quiz' | 'flashcards'>('toc');
+  const [sideTab, setSideTab] = useState<'toc' | 'quiz' | 'flashcards' | 'pdf'>('toc');
   const [selectedSectionIdx, setSelectedSectionIdx] = useState(0);
   const currentSection = day?.sections[selectedSectionIdx] ?? day?.sections[0];
+
+  // Refs for auto-scrolling
+  const quizRef = useRef<HTMLElement>(null);
+  const flashRef = useRef<HTMLElement>(null);
 
   // AI Quiz state
   const [aiQuizzes, setAiQuizzes] = useState<GeneratedQuiz[]>([]);
@@ -1544,6 +1548,10 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
   const [flashRevealed, setFlashRevealed] = useState(false);
   const [flashLoading, setFlashLoading] = useState(false);
 
+  // Concise summary state
+  const [conciseSummary, setConciseSummary] = useState<string | null>(null);
+  const [conciseLoading, setConciseLoading] = useState(false);
+
   // Load AI quizzes when section changes
   useEffect(() => {
     setAiQuizzes([]);
@@ -1553,7 +1561,12 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
     setFlashcards([]);
     setFlashIdx(0);
     setFlashRevealed(false);
+    setConciseSummary(null);
     if (currentSection?.textExcerpt && aiEnabled) {
+      setConciseLoading(true);
+      generateConciseSummary(currentSection.title, currentSection.textExcerpt)
+        .then(s => { setConciseSummary(s); setConciseLoading(false); })
+        .catch(() => setConciseLoading(false));
       setQuizLoading(true);
       generateQuizzes(currentSection.title, currentSection.textExcerpt, 3)
         .then(qs => { setAiQuizzes(qs); setQuizLoading(false); })
@@ -1580,7 +1593,7 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
 
   return (
   <div className="flex min-h-[calc(100vh-4rem)]">
-    <aside className="w-72 bg-surface-container-low border-r border-outline-variant/5 flex flex-col sticky top-16 h-[calc(100vh-4rem)] hidden xl:flex">
+    <aside className="w-72 bg-surface-container-low border-r border-outline-variant/5 flex flex-col sticky top-16 h-[calc(100vh-4rem)] hidden xl:flex overflow-y-auto">
       <div className="p-8">
         <div className="mb-8">
           <h2 className="font-headline text-2xl font-bold text-on-surface leading-tight">{plan.bookTitle}</h2>
@@ -1591,14 +1604,20 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
             <BookOpen size={20} className={cn(sideTab === 'toc' && "fill-primary/10")} />
             <span className={cn("font-label text-sm", sideTab === 'toc' ? "font-bold" : "font-medium")}>Table of Contents</span>
           </button>
-          <button onClick={() => setSideTab('quiz')} className={cn("w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group", sideTab === 'quiz' ? "bg-surface-container-lowest text-primary editorial-shadow" : "text-on-surface-variant hover:bg-surface-container-high")}>
+          <button onClick={() => { setSideTab('quiz'); setTimeout(() => quizRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100); }} className={cn("w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group", sideTab === 'quiz' ? "bg-surface-container-lowest text-primary editorial-shadow" : "text-on-surface-variant hover:bg-surface-container-high")}>
             <HelpCircle size={20} className={cn(sideTab === 'quiz' && "fill-primary/10")} />
             <span className={cn("font-label text-sm", sideTab === 'quiz' ? "font-bold" : "font-medium")}>Mini-Quizzes {aiQuizzes.length > 0 ? `(${aiQuizzes.length})` : ''}</span>
           </button>
-          <button onClick={() => setSideTab('flashcards')} className={cn("w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group", sideTab === 'flashcards' ? "bg-surface-container-lowest text-primary editorial-shadow" : "text-on-surface-variant hover:bg-surface-container-high")}>
+          <button onClick={() => { setSideTab('flashcards'); setTimeout(() => flashRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100); }} className={cn("w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group", sideTab === 'flashcards' ? "bg-surface-container-lowest text-primary editorial-shadow" : "text-on-surface-variant hover:bg-surface-container-high")}>
             <FileText size={20} className={cn(sideTab === 'flashcards' && "fill-primary/10")} />
             <span className={cn("font-label text-sm", sideTab === 'flashcards' ? "font-bold" : "font-medium")}>Flashcards {flashcards.length > 0 ? `(${flashcards.length})` : ''}</span>
           </button>
+          {plan.pdfFileName && (
+          <button onClick={() => setSideTab('pdf')} className={cn("w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all group", sideTab === 'pdf' ? "bg-surface-container-lowest text-primary editorial-shadow" : "text-on-surface-variant hover:bg-surface-container-high")}>
+            <Maximize2 size={20} className={cn(sideTab === 'pdf' && "fill-primary/10")} />
+            <span className={cn("font-label text-sm", sideTab === 'pdf' ? "font-bold" : "font-medium")}>Original PDF</span>
+          </button>
+          )}
         </nav>
         {sideTab === 'toc' && day && (
           <div className="mt-6 space-y-1">
@@ -1607,7 +1626,8 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
                 className={cn("w-full text-left px-3 py-2 rounded-lg text-xs font-label transition-all",
                   i === selectedSectionIdx ? "bg-primary/10 text-primary font-bold" : "text-on-surface-variant hover:bg-surface-container-high"
                 )}>
-                {sec.title}
+                <span className="block truncate">{sec.title.length > 40 ? `pp. ${sec.startPage}–${sec.endPage}` : sec.title}</span>
+                {sec.title.length > 40 && <span className="block text-[10px] text-on-surface-variant/60 truncate">{sec.title.slice(0, 50)}…</span>}
               </button>
             ))}
           </div>
@@ -1644,9 +1664,51 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
         </div>
         <ProgressBar progress={progressPct} className="h-1.5" />
       </div>
+
+      {/* PDF Tab — full-width PDF viewer */}
+      {sideTab === 'pdf' && plan.pdfFileName && currentSection ? (
+        <div className="max-w-5xl mx-auto px-10">
+          <div className="flex items-center gap-3 mb-6">
+            <Maximize2 size={20} className="text-primary" />
+            <h2 className="font-headline text-2xl font-bold text-on-surface">Original PDF</h2>
+            <span className="font-label text-sm text-on-surface-variant">— {currentSection.title} (pp. {currentSection.startPage}–{currentSection.endPage})</span>
+          </div>
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+            <div className="xl:col-span-2">
+              <PdfViewer
+                pdfUrl={`/api/files/${plan.pdfFileName}`}
+                startPage={currentSection.startPage}
+                endPage={currentSection.endPage}
+              />
+            </div>
+            <div className="space-y-6">
+              <div className="bg-surface-container-low rounded-xl p-6 border border-outline-variant/10">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-headline font-bold text-on-surface">Section Info</h3>
+                </div>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="bg-surface-container-high/50 rounded-lg p-3 text-center">
+                    <div className="font-headline text-lg font-bold text-on-surface">{currentSection.estimatedReadingMinutes}</div>
+                    <div className="font-label text-xs text-on-surface-variant">min read</div>
+                  </div>
+                  <div className="bg-surface-container-high/50 rounded-lg p-3 text-center">
+                    <div className="font-headline text-lg font-bold text-on-surface capitalize">{currentSection.sectionType}</div>
+                    <div className="font-label text-xs text-on-surface-variant">type</div>
+                  </div>
+                </div>
+                <p className="font-label text-xs text-on-surface-variant">Pages {currentSection.startPage}–{currentSection.endPage} · {currentSection.wordCount} words</p>
+              </div>
+              <AISummary context={currentSection.textExcerpt} aiEnabled={aiEnabled} sectionTitle={currentSection.title} bookTitle={plan.bookTitle} />
+            </div>
+          </div>
+        </div>
+      ) : (
+
       <article className="max-w-3xl mx-auto px-10">
         <header className="mb-12">
-          <h1 className="font-headline text-5xl font-extrabold text-on-surface mb-6 leading-[1.1]">{currentSection?.title ?? 'Study Session'}</h1>
+          <h1 className="font-headline text-5xl font-extrabold text-on-surface mb-6 leading-[1.1]">
+            {currentSection ? (currentSection.title.length > 60 ? `Section — Pages ${currentSection.startPage}–${currentSection.endPage}` : currentSection.title) : 'Study Session'}
+          </h1>
           <div className="flex items-center gap-4 text-on-surface-variant font-label text-sm italic border-l-2 border-primary/20 pl-4">
             <span>Reading Time: {currentSection?.estimatedReadingMinutes ?? 0} mins</span>
             <span className="w-1 h-1 rounded-full bg-outline-variant"></span>
@@ -1656,19 +1718,41 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
           </div>
         </header>
         <div className="space-y-8 text-lg text-on-surface leading-relaxed">
-          {currentSection?.textExcerpt ? (
-            currentSection.textExcerpt.split('\n\n').filter(Boolean).map((para, i) => (
-              <p key={i}>{para}</p>
-            ))
-          ) : (
-            <p className="italic text-on-surface-variant">
-              No text content available for this section. Open the original PDF to read pages {currentSection?.startPage}–{currentSection?.endPage}.
-            </p>
+          {/* Concise AI Summary */}
+          <div className="p-6 bg-primary-container/10 rounded-xl border border-primary/10">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles size={16} className="text-primary" />
+              <h3 className="font-headline text-sm font-bold text-primary">Overview</h3>
+            </div>
+            {conciseLoading ? (
+              <div className="flex items-center gap-2 text-on-surface-variant italic text-sm">
+                <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                Summarizing...
+              </div>
+            ) : conciseSummary ? (
+              <p className="text-base text-on-surface leading-relaxed">{conciseSummary}</p>
+            ) : (
+              <p className="text-sm text-on-surface-variant italic">{aiEnabled ? 'No summary available for this section.' : 'Enable AI Assistance in Settings.'}</p>
+            )}
+          </div>
+
+          {currentSection?.textExcerpt && (
+            <details className="group">
+              <summary className="cursor-pointer font-label text-sm font-bold text-on-surface-variant hover:text-primary transition-colors list-none flex items-center gap-2">
+                <ChevronRight size={16} className="group-open:rotate-90 transition-transform" />
+                View raw extracted text
+              </summary>
+              <div className="mt-4 p-6 bg-surface-container-low rounded-xl border border-outline-variant/10 text-sm text-on-surface-variant leading-relaxed max-h-[400px] overflow-y-auto">
+                {currentSection.textExcerpt.split('\n\n').filter(Boolean).map((para, i) => (
+                  <p key={i} className="mb-3">{para}</p>
+                ))}
+              </div>
+            </details>
           )}
 
           {/* AI-Generated Mini-Quiz */}
           {currentSection && (
-          <section className="my-16 p-10 bg-surface-container-low rounded-xl border border-outline-variant/5 editorial-shadow">
+          <section ref={quizRef} className="my-16 p-10 bg-surface-container-low rounded-xl border border-outline-variant/5 editorial-shadow">
             <div className="flex items-center gap-3 mb-6">
               <div className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
                 <HelpCircle size={20} className="text-on-primary-container" />
@@ -1764,7 +1848,7 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
 
           {/* Flashcard Section (inline) */}
           {flashcards.length > 0 && (
-          <section className="my-12 p-8 bg-tertiary-container/10 rounded-xl border border-tertiary/10">
+          <section ref={flashRef} className="my-12 p-8 bg-tertiary-container/10 rounded-xl border border-tertiary/10">
             <div className="flex items-center gap-3 mb-6">
               <FileText className="text-tertiary" size={20} />
               <h3 className="font-headline text-sm font-bold text-tertiary tracking-wide uppercase">Flashcard: Key Terms ({flashIdx + 1}/{flashcards.length})</h3>
@@ -1789,11 +1873,6 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
           </section>
           )}
 
-          <AISummary context={currentSection?.textExcerpt} aiEnabled={aiEnabled} sectionTitle={currentSection?.title} bookTitle={plan.bookTitle} />
-
-          <blockquote className="my-12 pl-8 border-l-4 border-primary italic font-light text-2xl text-on-surface-variant font-body">
-            "Understanding requires not just reading, but actively engaging with the material."
-          </blockquote>
 
           {/* Section navigation */}
           {day && day.sections.length > 1 && (
@@ -1815,22 +1894,9 @@ const StudyView = ({ setView, aiEnabled, activePlanId }: { setView: (v: string) 
             </div>
           )}
 
-          {/* Inline PDF Viewer */}
-          {plan.pdfFileName && currentSection && (
-            <section className="my-12">
-              <div className="flex items-center gap-3 mb-4">
-                <Maximize2 size={20} className="text-primary" />
-                <h3 className="font-headline text-sm font-bold text-primary tracking-wide uppercase">Original PDF — Pages {currentSection.startPage}–{currentSection.endPage}</h3>
-              </div>
-              <PdfViewer
-                pdfUrl={`/api/files/${plan.pdfFileName}`}
-                startPage={currentSection.startPage}
-                endPage={currentSection.endPage}
-              />
-            </section>
-          )}
         </div>
       </article>
+      )}
     </main>
   </div>
   );
