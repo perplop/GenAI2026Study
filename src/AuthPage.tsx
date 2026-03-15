@@ -13,7 +13,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onAuthSuccess }) => {
   const [mode, setMode] = useState<'login' | 'signup'>('login');
 
   return (
-    <main className="flex-1 flex items-center justify-center bg-surface px-4 py-10">
+    <main className="flex items-center justify-center bg-surface px-4 py-10">
       {/* Fixed-size auth card so it doesn't jump when toggling modes.
           Made taller & wider so error messages don't clip content. */}
       <div className="w-full max-w-5xl h-[640px] flex flex-col md:flex-row bg-surface-container-lowest rounded-3xl border border-outline-variant/25 overflow-hidden shadow-lg">

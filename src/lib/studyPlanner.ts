@@ -1,28 +1,17 @@
 import type { AnalyzedSection, PlanDay, SavedStudyPlan } from '../types';
-
-const STORAGE_KEY = 'genai-study-plans';
-const PROGRESS_KEY = 'genai-study-progress';
+import { fetchPlans, upsertPlan, removePlan, fetchProgress, updateProgress } from './apiClient';
 
 export interface StudyProgress {
   planId: string;
   dayIndex: number; // 0-based index into plan.days
 }
 
-export function getStudyProgress(): StudyProgress | null {
-  try {
-    const raw = localStorage.getItem(PROGRESS_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
+export async function getStudyProgress(): Promise<StudyProgress | null> {
+  return fetchProgress();
 }
 
-export function setStudyProgress(progress: StudyProgress): void {
-  try {
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
-  } catch (e) {
-    console.error('setStudyProgress:', e);
-  }
+export async function setStudyProgress(progress: StudyProgress): Promise<void> {
+  return updateProgress(progress);
 }
 
 /** Distribute sections across numDays by balancing total workload score (greedy). */
@@ -67,33 +56,14 @@ export function scheduleDays(sections: AnalyzedSection[], numDays: number): Plan
   return days;
 }
 
-export function savePlan(plan: SavedStudyPlan): void {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const list: SavedStudyPlan[] = raw ? JSON.parse(raw) : [];
-    const idx = list.findIndex((p) => p.id === plan.id);
-    if (idx >= 0) list[idx] = plan;
-    else list.push(plan);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.error('savePlan:', e);
-  }
+export async function savePlan(plan: SavedStudyPlan): Promise<void> {
+  return upsertPlan(plan as any);
 }
 
-export function loadAllPlans(): SavedStudyPlan[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+export async function loadAllPlans(): Promise<SavedStudyPlan[]> {
+  return fetchPlans() as Promise<SavedStudyPlan[]>;
 }
 
-export function deletePlan(id: string): void {
-  try {
-    const list = loadAllPlans().filter((p) => p.id !== id);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.error('deletePlan:', e);
-  }
+export async function deletePlan(id: string): Promise<void> {
+  return removePlan(id);
 }
