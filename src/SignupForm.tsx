@@ -63,8 +63,9 @@ const SignupForm: React.FC<SignupFormProps> = ({ onSignupSuccess }) => {
     try {
       setSubmitting(true);
 
-      const res = await fetch('http://localhost:4000/api/register', {
+      const res = await fetch('http://localhost:3000/api/register', {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });

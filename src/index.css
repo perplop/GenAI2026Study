@@ -33,6 +33,35 @@
   --color-error-container: #fa746f;
 }
 
+/* Dark theme overrides */
+.dark {
+  --color-primary: #5bc4cf;
+  --color-primary-dim: #7dd6de;
+  --color-primary-container: #004f56;
+  --color-on-primary: #00363b;
+  --color-on-primary-container: #a3eefd;
+
+  --color-secondary: #adcbd8;
+  --color-secondary-container: #2e4d5a;
+  --color-on-secondary-container: #c9e7f7;
+
+  --color-tertiary: #99b8de;
+  --color-tertiary-container: #2a4a68;
+  --color-on-tertiary-container: #b5d4fa;
+
+  --color-surface: #111315;
+  --color-surface-container-low: #1a1c1e;
+  --color-surface-container-lowest: #25282a;
+  --color-surface-container-high: #2d3032;
+  --color-surface-container-highest: #383b3e;
+  --color-on-surface: #e3e6e7;
+  --color-on-surface-variant: #b8bebf;
+
+  --color-outline-variant: #5a6466;
+  --color-error: #ffb4ab;
+  --color-error-container: #93000a;
+}
+
 @layer base {
   body {
     @apply bg-surface text-on-surface font-body;
@@ -46,4 +75,8 @@
 .glass-panel {
   background: rgba(246, 250, 251, 0.8);
   backdrop-filter: blur(20px);
+}
+
+.dark .glass-panel {
+  background: rgba(17, 19, 21, 0.85);
 }

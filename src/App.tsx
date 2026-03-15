@@ -37,6 +37,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import OpenAI from "openai";
 import { cn } from './lib/utils';
 import { Course, Activity, Module, QuizQuestion, LibraryItem, TextbookAnalysis, GeminiChunkResult } from './types';
+import type { AuthUser } from './LoginForm';
 import { parseTextbook, TextbookChunk } from './lib/pdfParser';
 
 // --- Mock Data ---
@@ -261,8 +262,49 @@ const NotificationPanel = ({ isOpen, onClose }: { isOpen: boolean; onClose: () =
     )}
   </AnimatePresence>
 );
-
-const SettingsPanel = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => (
+const ProfilePanel = ({ isOpen, onClose, onSignOut, onProfileClick }: { isOpen: boolean; onClose: () => void; onSignOut: () => void; onProfileClick: () => void }) => (
+  <AnimatePresence>
+    {isOpen && (
+      <>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={onClose}
+          className="fixed inset-0 z-[80]"
+        />
+        <motion.div
+          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+          className="fixed top-16 right-6 w-72 bg-surface-container-lowest border border-outline-variant/20 rounded-2xl editorial-shadow z-[90] overflow-hidden"
+        >
+          <div className="p-6 flex flex-col items-center gap-3 border-b border-outline-variant/10">
+            <img src="https://picsum.photos/seed/student/100/100" className="w-16 h-16 rounded-full border-2 border-primary/20" />
+            <p className="font-headline font-bold text-on-surface">Alex</p>
+          </div>
+          <div className="p-4 space-y-1">
+          <button onClick={onProfileClick} className="w-full text-left text-sm font-medium px-3 py-2 rounded-lg hover:bg-surface-container-high transition-colors">Profile Details</button>
+            <button onClick={onSignOut} className="w-full text-left text-sm font-medium px-3 py-2 rounded-lg text-error hover:bg-surface-container-high transition-colors">Sign Out</button>
+          </div>
+        </motion.div>
+      </>
+    )}
+  </AnimatePresence>
+);
+const SettingsPanel = ({
+  isOpen,
+  onClose,
+  darkMode,
+  onDarkModeToggle,
+  onSignOut,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  darkMode: boolean;
+  onDarkModeToggle: () => void;
+  onSignOut: () => void;
+}) => (
   <AnimatePresence>
     {isOpen && (
       <>
@@ -290,22 +332,24 @@ const SettingsPanel = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
               <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Preferences</p>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">Dark Mode</span>
-                <button className="w-10 h-5 bg-outline-variant/20 rounded-full relative transition-colors">
-                  <div className="absolute left-1 top-1 w-3 h-3 bg-on-surface-variant rounded-full" />
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onDarkModeToggle(); }}
+                  className={cn(
+                    "w-10 h-5 rounded-full relative transition-colors",
+                    darkMode ? "bg-primary" : "bg-outline-variant/20"
+                  )}
+                  aria-pressed={darkMode}
+                  aria-label={darkMode ? "Disable dark mode" : "Enable dark mode"}
+                >
+                  <div
+                    className={cn(
+                      "absolute top-1 w-3 h-3 rounded-full transition-all",
+                      darkMode ? "right-1 bg-on-primary" : "left-1 bg-on-surface-variant"
+                    )}
+                  />
                 </button>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium">AI Assistance</span>
-                <button className="w-10 h-5 bg-primary rounded-full relative transition-colors">
-                  <div className="absolute right-1 top-1 w-3 h-3 bg-on-primary rounded-full" />
-                </button>
-              </div>
-            </div>
-            <div className="space-y-3">
-              <p className="text-[10px] font-bold text-on-surface-variant uppercase tracking-widest">Account</p>
-              <button className="w-full text-left text-sm font-medium py-2 hover:text-primary transition-colors">Profile Details</button>
-              <button className="w-full text-left text-sm font-medium py-2 hover:text-primary transition-colors">Subscription Plan</button>
-              <button className="w-full text-left text-sm font-medium py-2 text-error hover:underline transition-colors">Sign Out</button>
             </div>
           </div>
         </motion.div>
@@ -318,12 +362,14 @@ const TopNav = ({
   onMenuClick, 
   setView,
   onNotificationClick,
-  onSettingsClick
+  onSettingsClick,
+  onProfileClick,
 }: { 
   onMenuClick: () => void;
   setView: (v: string) => void;
   onNotificationClick: () => void;
   onSettingsClick: () => void;
+  onProfileClick: () => void;
 }) => (
   <nav className="sticky top-0 z-50 glass-panel border-b border-outline-variant/10 px-6 py-4 flex items-center justify-between h-16">
     <div className="flex items-center gap-4 lg:gap-12">
@@ -360,11 +406,13 @@ const TopNav = ({
         >
           <Settings size={24} />
         </button>
-        <img 
-          alt="User Profile" 
-          className="w-10 h-10 rounded-full border-2 border-surface-container-highest object-cover" 
-          src="https://picsum.photos/seed/student/100/100" 
-        />
+        <button onClick={onProfileClick}>
+          <img
+            alt="User Profile"
+            className="w-10 h-10 rounded-full border-2 border-surface-container-highest object-cover"
+            src="https://picsum.photos/seed/student/100/100"
+          />
+        </button>
       </div>
     </div>
   </nav>
@@ -715,7 +763,7 @@ const CurateView = () => {
                 <div className="relative mb-8 w-64 h-48 flex items-center justify-center">
                   <div className="absolute inset-0 bg-primary-container/20 rounded-xl rotate-3 scale-95 transition-transform group-hover:rotate-6"></div>
                   <div className="absolute inset-0 bg-secondary-container/20 rounded-xl -rotate-2 scale-95 transition-transform group-hover:-rotate-4"></div>
-                  <div className="relative bg-white p-6 rounded-lg editorial-shadow border border-outline-variant/10 w-32 h-44 z-10 flex flex-col justify-between">
+                  <div className="relative bg-surface-container-lowest p-6 rounded-lg editorial-shadow border border-outline-variant/10 w-32 h-44 z-10 flex flex-col justify-between">
                     <div className="space-y-2">
                       <div className="h-2 w-full bg-surface-container-highest rounded-full"></div>
                       <div className="h-2 w-3/4 bg-surface-container-highest rounded-full"></div>
@@ -1014,7 +1062,88 @@ const CurateView = () => {
     </div>
   );
 };
+const ProfileView = ({ user }: { user: { email: string } }) => {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
+  const handlePasswordChange = async () => {
+    if (newPassword.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const res = await fetch('http://localhost:3000/api/change-password', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error ?? 'Failed to change password.');
+      } else {
+        setMessage('Password changed successfully!');
+        setCurrentPassword('');
+        setNewPassword('');
+        setConfirmPassword('');
+      }
+    } catch {
+      setError('Unexpected error. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-2xl mx-auto px-6 py-10">
+      <h1 className="font-headline text-4xl font-extrabold text-on-surface mb-8">Profile</h1>
+      <div className="space-y-8">
+        <div className="bg-surface-container-low rounded-xl p-8 space-y-6">
+          <div className="flex items-center gap-6">
+            <img src="https://picsum.photos/seed/student/100/100" className="w-20 h-20 rounded-full border-2 border-primary/20" />
+            <div>
+              <h2 className="font-headline text-xl font-bold text-on-surface">Alex</h2>
+              <p className="text-on-surface-variant text-sm">{user.email}</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-surface-container-low rounded-xl p-8 space-y-6">
+          <h2 className="font-headline text-xl font-bold text-on-surface">Change Password</h2>
+          {message && <p className="text-sm text-primary font-medium">{message}</p>}
+          {error && <p className="text-sm text-error font-medium">{error}</p>}
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-label font-bold uppercase tracking-widest text-on-surface-variant mb-1">Current Password</label>
+              <input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-outline-variant/40 bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/40" />
+            </div>
+            <div>
+              <label className="block text-xs font-label font-bold uppercase tracking-widest text-on-surface-variant mb-1">New Password</label>
+              <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-outline-variant/40 bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/40" />
+            </div>
+            <div>
+              <label className="block text-xs font-label font-bold uppercase tracking-widest text-on-surface-variant mb-1">Confirm New Password</label>
+              <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-outline-variant/40 bg-surface text-sm text-on-surface focus:outline-none focus:ring-2 focus:ring-primary/40" />
+            </div>
+            <button onClick={handlePasswordChange} disabled={loading} className="w-full py-3 rounded-lg bg-primary text-on-primary font-headline font-bold text-sm hover:bg-primary-dim transition-colors disabled:opacity-70">
+              {loading ? 'Updating...' : 'Update Password'}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 const LibraryView = ({ items }: { items: LibraryItem[] }) => {
   return (
     <div className="max-w-[1440px] mx-auto px-6 lg:px-16 py-10">
@@ -1373,12 +1502,20 @@ const NightlyReviewView = () => (
 
 // --- Main App ---
 
-export default function App() {
+export interface AppProps {
+  user: AuthUser;
+  onSignOut: () => void;
+  darkMode: boolean;
+  onDarkModeToggle: () => void;
+}
+
+export default function App({ user, onSignOut, darkMode, onDarkModeToggle }: AppProps) {
   const [view, setView] = useState('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isNightlyFABVisible, setIsNightlyFABVisible] = useState(true);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showProfile, setShowProfile] = useState(false);
   const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([]);
 
   const fetchLibrary = async () => {
@@ -1404,9 +1541,17 @@ export default function App() {
         onMenuClick={() => setIsSidebarOpen(true)} 
         onNotificationClick={() => setShowNotifications(!showNotifications)}
         onSettingsClick={() => setShowSettings(!showSettings)}
+        onProfileClick={() => setShowProfile(!showProfile)}
       />
       <NotificationPanel isOpen={showNotifications} onClose={() => setShowNotifications(false)} />
-      <SettingsPanel isOpen={showSettings} onClose={() => setShowSettings(false)} />
+      <ProfilePanel isOpen={showProfile} onClose={() => setShowProfile(false)} onSignOut={onSignOut} onProfileClick={() => { setShowProfile(false); setView('profile'); }} />
+      <SettingsPanel
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        darkMode={darkMode}
+        onDarkModeToggle={onDarkModeToggle}
+        onSignOut={() => { setShowSettings(false); onSignOut(); }}
+      />
       
       <div className="flex flex-1">
         <Sidebar 
@@ -1430,6 +1575,7 @@ export default function App() {
               {view === 'practice' && <PracticeView />}
               {view === 'timeline' && <NightlyReviewView />}
               {view === 'library' && <LibraryView items={libraryItems} />}
+              {view === 'profile' && <ProfileView user={user} />}
             </motion.div>
           </AnimatePresence>
         </main>
